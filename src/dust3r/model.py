@@ -770,28 +770,38 @@ class ARCroco3DStereo(CroCoNet):
         shapes = shapes.view(-1, 2)  # Shape: (num_views * batch_size, 2)
         img_masks_flat = img_mask.view(-1)  # Shape: (num_views * batch_size)
         ray_masks_flat = ray_mask.view(-1)
-        selected_imgs = imgs[img_masks_flat]
-        selected_shapes = shapes[img_masks_flat]
-        if selected_imgs.size(0) > 0:
-            img_out, img_pos, _ = self._encode_image(selected_imgs, selected_shapes)
-        else:
-            raise NotImplementedError
-        full_out = [
-            torch.zeros(
-                len(views) * batch_size, *img_out[0].shape[1:], device=img_out[0].device
-            )
-            for _ in range(len(img_out))
-        ]
-        full_pos = torch.zeros(
-            len(views) * batch_size,
-            *img_pos.shape[1:],
-            device=img_pos.device,
-            dtype=img_pos.dtype,
-        )
+        # [TPU MIGRATION] Avoid dynamic shapes by encoding all images and masking the output
+        # selected_imgs = imgs[img_masks_flat]
+        # selected_shapes = shapes[img_masks_flat]
+        # if selected_imgs.size(0) > 0:
+        #     img_out, img_pos, _ = self._encode_image(selected_imgs, selected_shapes)
+        # else:
+        #     raise NotImplementedError
+        
+        # Encode all images (valid and invalid) to keep shapes fixed
+        img_out, img_pos, _ = self._encode_image(imgs, shapes)
+        
+        full_out = []
+        # Apply mask: use computed output where mask is True, else use masked_img_token
+        # img_masks_flat is (N*B), we need to broadcast to (N*B, Tokens, Channels)
+        mask_expanded = img_masks_flat.view(-1, 1, 1) 
+        
         for i in range(len(img_out)):
-            full_out[i][img_masks_flat] += img_out[i]
-            full_out[i][~img_masks_flat] += self.masked_img_token
-        full_pos[img_masks_flat] += img_pos
+            # Use torch.where to select between computed features and masked token
+            # This maintains the computation graph structure without dynamic slicing
+            masked_token_expanded = self.masked_img_token.expand_as(img_out[i])
+            out_masked = torch.where(mask_expanded, img_out[i], masked_token_expanded)
+            full_out.append(out_masked)
+
+        # For position embeddings, we can just use the computed ones as they depend on shape which is handled
+        # If shapes are dummy for invalid images, pos might be dummy but it doesn't matter as features are masked
+        # However, to be safe/consistent with original logic which zeroed then added:
+        # full_pos[img_masks_flat] += img_pos -> implies pos is 0 for invalid? 
+        # Actually original code: full_pos = zeros; full_pos[mask] += img_pos. So invalid positions are 0.
+        # But wait, if we use masked_token, maybe we still want valid positions?
+        # The original code leaves full_pos as 0 for invalid entries.
+        # Let's replicate that behavior using torch.where
+        full_pos = torch.where(mask_expanded.long(), img_pos, torch.zeros_like(img_pos))
 
         # MHMR
         imgs_mhmr = torch.stack(

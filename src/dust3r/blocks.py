@@ -114,7 +114,8 @@ class Attention(nn.Module):
         if self.rope is not None:
             q = q.float()
             k = k.float()
-            with torch.autocast(device_type="cuda", enabled=False):
+            device_type = 'xla' if 'xla' in str(q.device) else ('cuda' if torch.cuda.is_available() else 'cpu')
+            with torch.autocast(device_type=device_type, enabled=False):
                 q = self.rope(q, xpos)
                 k = self.rope(k, xpos)
             q = q.to(q_type)
@@ -220,13 +221,15 @@ class CrossAttention(nn.Module):
         if self.rope is not None:
             if qpos is not None:
                 q = q.float()
-                with torch.autocast(device_type="cuda", enabled=False):
+                device_type = 'xla' if 'xla' in str(q.device) else ('cuda' if torch.cuda.is_available() else 'cpu')
+                with torch.autocast(device_type=device_type, enabled=False):
                     q = self.rope(q, qpos)
                 q = q.to(q_type)
 
             if kpos is not None:
                 k = k.float()
-                with torch.autocast(device_type="cuda", enabled=False):
+                device_type = 'xla' if 'xla' in str(k.device) else ('cuda' if torch.cuda.is_available() else 'cpu')
+                with torch.autocast(device_type=device_type, enabled=False):
                     k = self.rope(k, kpos)
                 k = k.to(k_type)
 

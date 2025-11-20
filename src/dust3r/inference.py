@@ -129,6 +129,10 @@ def inference_step(view, state_args, model, device, verbose=True):
 
     # [TPU MIGRATION] Use device-agnostic autocast - detect device from view
     device_type = str(view['img'].device).split(':')[0] if 'img' in view else 'cpu'
+    if 'xla' in device_type: device_type = 'xla'
+    elif 'cuda' in device_type: device_type = 'cuda'
+    else: device_type = 'cpu'
+    
     with torch.autocast(device_type=device_type, enabled=False):
         state_feat, state_pos, init_state_feat, mem, init_mem = state_args
         pred, _ = model.inference_step(
@@ -159,6 +163,10 @@ def inference_recurrent(groups, model, device, verbose=True):
 
     # [TPU MIGRATION] Use device-agnostic autocast - use provided device
     device_type = str(device).split(':')[0]
+    if 'xla' in device_type: device_type = 'xla'
+    elif 'cuda' in device_type: device_type = 'cuda'
+    else: device_type = 'cpu'
+
     with torch.autocast(device_type=device_type, enabled=False):
         preds, batch, state_args = model.forward_recurrent(
             groups, device, ret_state=True
@@ -174,6 +182,10 @@ def inference_recurrent_lighter(groups, model, device, verbose=True, is_naive=Fa
 
     # [TPU MIGRATION] Use device-agnostic autocast - use provided device
     device_type = str(device).split(':')[0]
+    if 'xla' in device_type: device_type = 'xla'
+    elif 'cuda' in device_type: device_type = 'cuda'
+    else: device_type = 'cpu'
+
     with torch.autocast(device_type=device_type, enabled=False):
         if is_naive:
             preds, batch, state_args = model.forward_recurrent_lighter_naive(

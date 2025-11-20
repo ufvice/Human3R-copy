@@ -10,6 +10,7 @@ import datetime
 import json
 import numpy as np
 import os
+os.environ['PJRT_DEVICE'] = 'TPU'
 import sys
 import time
 import math

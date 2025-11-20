@@ -11,12 +11,17 @@ except ImportError:
 from dust3r.utils.geometry import inv, geotrf
 from dust3r.utils.image import unpad_image
 import numpy as np
+# [TPU MIGRATION] Safe imports for visualization libs
 try:
     import pyrender
-except:
-    import pyrender
+except ImportError:
+    pyrender = None
 
-import trimesh
+try:
+    import trimesh
+except ImportError:
+    trimesh = None
+
 from PIL import Image
 
 def render(

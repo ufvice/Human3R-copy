@@ -217,6 +217,10 @@ def validate_one_epoch(
         epoch_1000x = int((1 + epoch) * 1000)
         for k, v in results.items():
             log_writer.add_scalar("val/" + k, v, epoch_1000x)
+        
+        # [TPU MIGRATION] Disable validation rendering to avoid gsplat/AttributeError
+        # The following rendering code is disabled for TPU compatibility
+        # Rendering requires gsplat which is not available on TPU
 
     print("Averaged stats:", results)
     return results

@@ -213,8 +213,18 @@ def main(args):
         cudnn.benchmark = True
 
     # Metrics / criterion
-    # [TPU MIGRATION] Use device-agnostic device selection
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    # [TPU MIGRATION] device should be set by distributed initialization or accelerator
+    # For TPU compatibility, use XLA device detection
+    if hasattr(args, 'device'):
+        device = args.device
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        try:
+            import torch_xla.core.xla_model as xm
+            device = xm.xla_device()
+        except ImportError:
+            device = torch.device("cpu")
     metrics = (StereoMetrics if args.task == "stereo" else FlowMetrics)().to(device)
     criterion = eval(args.criterion).to(device)
     print("Criterion: ", args.criterion)

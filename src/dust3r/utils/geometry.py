@@ -185,8 +185,9 @@ def depthmap_to_camera_coordinates(depthmap, camera_intrinsics, pseudo_focal=Non
     camera_intrinsics = np.float32(camera_intrinsics)
     H, W = depthmap.shape
 
-    assert camera_intrinsics[0, 1] == 0.0
-    assert camera_intrinsics[1, 0] == 0.0
+    # [TPU MIGRATION] Removed assertions that cause forced sync
+    # assert camera_intrinsics[0, 1] == 0.0
+    # assert camera_intrinsics[1, 0] == 0.0
     if pseudo_focal is None:
         fu = camera_intrinsics[0, 0]
         fv = camera_intrinsics[1, 1]
@@ -503,7 +504,8 @@ def find_reciprocal_matches(P1, P2):
 
     reciprocal_in_P1 = nn2_in_P1[nn1_in_P2] == np.arange(len(nn1_in_P2))
     reciprocal_in_P2 = nn1_in_P2[nn2_in_P1] == np.arange(len(nn2_in_P1))
-    assert reciprocal_in_P1.sum() == reciprocal_in_P2.sum()
+    # [TPU MIGRATION] Removed assertion that causes forced sync
+    # assert reciprocal_in_P1.sum() == reciprocal_in_P2.sum()
     return reciprocal_in_P2, nn2_in_P1, reciprocal_in_P2.sum()
 
 

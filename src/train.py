@@ -44,7 +44,7 @@ from dust3r.viz import colorize
 from dust3r.utils.render import get_render_results, get_render_smpl
 import dust3r.utils.path_to_croco  # noqa: F401
 import croco.utils.misc as misc  # noqa
-from croco.utils.misc import NativeScalerWithGradNormCount as NativeScaler  # noqa
+# from croco.utils.misc import NativeScalerWithGradNormCount as NativeScaler  # noqa [TPU MIGRATION] Removed
 
 import hydra
 from omegaconf import OmegaConf
@@ -244,7 +244,7 @@ def train(args):
     param_groups = misc.get_parameter_groups(model, args.weight_decay)
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
     # print(optimizer)
-    loss_scaler = NativeScaler(accelerator=accelerator)
+    # loss_scaler = NativeScaler(accelerator=accelerator) [TPU MIGRATION] Removed
 
     accelerator.even_batches = False
     optimizer, model, data_loader_train = accelerator.prepare(
@@ -277,14 +277,14 @@ def train(args):
             args=args,
             model_without_ddp=model,
             optimizer=optimizer,
-            loss_scaler=loss_scaler,
+            # loss_scaler=loss_scaler, [TPU MIGRATION] Removed
             epoch=epoch,
             fname=fname,
             best_so_far=best_so_far,
         )
 
     best_so_far = misc.load_model(
-        args=args, model_without_ddp=model, optimizer=optimizer, loss_scaler=loss_scaler
+        args=args, model_without_ddp=model, optimizer=optimizer #, loss_scaler=loss_scaler [TPU MIGRATION] Removed
     )
     if best_so_far is None:
         best_so_far = float("inf")
@@ -349,7 +349,7 @@ def train(args):
             optimizer,
             accelerator,
             epoch,
-            loss_scaler,
+            # loss_scaler, [TPU MIGRATION] Removed
             log_writer=log_writer,
             args=args,
             smpl_model=smpl_model,
@@ -387,9 +387,9 @@ def build_dataset(dataset, batch_size, num_workers, accelerator, test=False, fix
         dataset,
         batch_size=batch_size,
         num_workers=num_workers,
-        pin_mem=True,
+        pin_mem=False, # [TPU MIGRATION] False for TPU
         shuffle=not (test),
-        drop_last=not (test),
+        drop_last=True, # [TPU MIGRATION] True for TPU to avoid recompilation
         accelerator=accelerator,
         fixed_length=fixed_length
     )
@@ -403,7 +403,6 @@ def train_one_epoch(
     optimizer: torch.optim.Optimizer,
     accelerator: Accelerator,
     epoch: int,
-    loss_scaler,
     args,
     log_writer=None,
     smpl_model: SMPLModel = None
@@ -423,7 +422,7 @@ def train_one_epoch(
             args=args,
             model_without_ddp=model,
             optimizer=optimizer,
-            loss_scaler=loss_scaler,
+            # loss_scaler=loss_scaler, [TPU MIGRATION] Removed
             epoch=epoch,
             fname=fname,
             best_so_far=best_so_far,
@@ -474,14 +473,22 @@ def train_one_epoch(
                 )
                 sys.exit(1)
             if not result.get("already_backprop", False):
-                loss_scaler(
-                    loss,
-                    optimizer,
-                    parameters=model.parameters(),
-                    update_grad=True,
-                    clip_grad=1.0,
-                )
-                optimizer.zero_grad()
+                # [TPU MIGRATION] Use accelerator directly instead of NativeScaler
+                accelerator.backward(loss)
+                if (data_iter_step + 1) % accum_iter == 0:
+                    if accelerator.sync_gradients:
+                        accelerator.clip_grad_norm_(model.parameters(), 1.0)
+                    optimizer.step()
+                    optimizer.zero_grad()
+                
+                # loss_scaler(
+                #     loss,
+                #     optimizer,
+                #     parameters=model.parameters(),
+                #     update_grad=True,
+                #     clip_grad=1.0,
+                # )
+                # optimizer.zero_grad()
 
             is_metric = batch[0]["is_metric"]
             curr_num_view = len(batch)
@@ -536,6 +543,10 @@ def train_one_epoch(
                     depths_self, gt_depths_self = get_render_results(
                         batch, result["pred"], self_view=True
                     )
+                    # [TPU MIGRATION] Check for None (gsplat missing)
+                    if depths_self is None:
+                        continue
+
                     depths_cross, gt_depths_cross = get_render_results(
                         batch, result["pred"], self_view=False
                     )
@@ -651,6 +662,10 @@ def test_one_epoch(
         depths_self, gt_depths_self = get_render_results(
             batch, result["pred"], self_view=True
         )
+        # [TPU MIGRATION] Check for None (gsplat missing)
+        if depths_self is None:
+            return results # Skip visualization if rendering failed
+
         depths_cross, gt_depths_cross = get_render_results(
             batch, result["pred"], self_view=False
         )

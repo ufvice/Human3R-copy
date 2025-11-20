@@ -394,7 +394,7 @@ def save_model(
     epoch,
     model_without_ddp,
     optimizer,
-    loss_scaler,
+    # loss_scaler, # [TPU MIGRATION] Removed
     fname=None,
     best_so_far=None,
 ):
@@ -406,7 +406,7 @@ def save_model(
         to_save = {
             "model": model_without_ddp.state_dict(),
             "optimizer": optimizer.state_dict(),
-            "scaler": loss_scaler.state_dict(),
+            # "scaler": loss_scaler.state_dict(), # [TPU MIGRATION] Removed
             "args": args,
             "epoch": epoch,
         }
@@ -416,7 +416,7 @@ def save_model(
         save_on_master(accelerator, to_save, checkpoint_path)
 
 
-def load_model(args, model_without_ddp, optimizer, loss_scaler):
+def load_model(args, model_without_ddp, optimizer): # [TPU MIGRATION] Removed loss_scaler
     args.start_epoch = 0
     best_so_far = None
     if args.resume is not None:
@@ -430,8 +430,9 @@ def load_model(args, model_without_ddp, optimizer, loss_scaler):
         model_without_ddp.load_state_dict(checkpoint["model"], strict=False)
         args.start_epoch = checkpoint["epoch"] + 1
         optimizer.load_state_dict(checkpoint["optimizer"])
-        if "scaler" in checkpoint:
-            loss_scaler.load_state_dict(checkpoint["scaler"])
+
+        # if "scaler" in checkpoint:
+        #     loss_scaler.load_state_dict(checkpoint["scaler"])
         if "best_so_far" in checkpoint:
             best_so_far = checkpoint["best_so_far"]
             printer.info(" & best_so_far={:g}".format(best_so_far))

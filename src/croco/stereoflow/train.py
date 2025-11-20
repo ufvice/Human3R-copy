@@ -208,9 +208,12 @@ def main(args):
     seed = args.seed + misc.get_rank()
     torch.manual_seed(seed)
     np.random.seed(seed)
-    cudnn.benchmark = True
+    # [TPU MIGRATION] Guard CUDA-specific cudnn setting
+    if torch.cuda.is_available():
+        cudnn.benchmark = True
 
     # Metrics / criterion
+    # [TPU MIGRATION] Use device-agnostic device selection
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     metrics = (StereoMetrics if args.task == "stereo" else FlowMetrics)().to(device)
     criterion = eval(args.criterion).to(device)

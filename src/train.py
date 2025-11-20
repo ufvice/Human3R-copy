@@ -24,7 +24,9 @@ from torch.utils.tensorboard import SummaryWriter
 
 from dust3r.utils.device import todevice
 
-torch.backends.cuda.matmul.allow_tf32 = True  # for gpu >= Ampere and pytorch >= 1.12
+# [TPU MIGRATION] Guard CUDA-specific optimization
+if torch.cuda.is_available():
+    torch.backends.cuda.matmul.allow_tf32 = True  # for gpu >= Ampere and pytorch >= 1.12
 
 from dust3r.model import (
     PreTrainedModel,
@@ -153,7 +155,9 @@ def train(args):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-    cudnn.benchmark = args.benchmark
+    # [TPU MIGRATION] Guard CUDA-specific cudnn setting
+    if torch.cuda.is_available():
+        cudnn.benchmark = args.benchmark
 
     # training dataset and loader
     printer.info("Building train dataset %s", args.train_dataset)
@@ -404,7 +408,8 @@ def train_one_epoch(
     log_writer=None,
     smpl_model: SMPLModel = None
 ):
-    assert torch.backends.cuda.matmul.allow_tf32 == True
+    # [TPU MIGRATION] Remove CUDA-specific assertion
+    # assert torch.backends.cuda.matmul.allow_tf32 == True
 
     model.train(True)
     metric_logger = misc.MetricLogger(delimiter="  ")
@@ -482,13 +487,16 @@ def train_one_epoch(
             curr_num_view = len(batch)
 
             del loss
-            tb_vis_img = (data_iter_step + 1) % accum_iter == 0 and (
-                (step + 1) % (args.print_img_freq)
-            ) == 0
+            # [TPU MIGRATION] Force disable visualization to prevent gsplat calls
+            tb_vis_img = False
+            # tb_vis_img = (data_iter_step + 1) % accum_iter == 0 and (
+            #     (step + 1) % (args.print_img_freq)
+            # ) == 0
             if not tb_vis_img:
                 del batch
             else:
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
             lr = optimizer.param_groups[0]["lr"]
             metric_logger.update(epoch=epoch_f)
@@ -675,7 +683,9 @@ def test_one_epoch(
             )
 
     del loss_details, loss_value, batch
-    torch.cuda.empty_cache()
+    # [TPU MIGRATION] Guard CUDA empty_cache
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     return results
 

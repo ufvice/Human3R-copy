@@ -165,6 +165,7 @@ def _save_batch(
 def main(args):
 
     # load the pretrained model and metrics
+    # [TPU MIGRATION] Use device-agnostic device selection
     device = (
         torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
     )

@@ -177,7 +177,9 @@ def main(args):
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    cudnn.benchmark = True
+    # [TPU MIGRATION] Guard CUDA-specific cudnn setting
+    if torch.cuda.is_available():
+        cudnn.benchmark = True
 
     ## training dataset and loader
     print(
@@ -342,7 +344,9 @@ def train_one_epoch(
 
         image1 = image1.to(device, non_blocking=True)
         image2 = image2.to(device, non_blocking=True)
-        with torch.cuda.amp.autocast(enabled=bool(args.amp)):
+        # [TPU MIGRATION] Use device-agnostic autocast
+        device_type = str(device).split(':')[0]
+        with torch.autocast(device_type=device_type, enabled=bool(args.amp)):
             out, mask, target = model(image1, image2)
             loss = criterion(out, mask, target)
 
@@ -362,7 +366,8 @@ def train_one_epoch(
         if (data_iter_step + 1) % accum_iter == 0:
             optimizer.zero_grad()
 
-        torch.cuda.synchronize()
+        # [TPU MIGRATION] Remove CUDA synchronization - TPU/XLA handles this automatically
+        # torch.cuda.synchronize()
 
         metric_logger.update(loss=loss_value)
 

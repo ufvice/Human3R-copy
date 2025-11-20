@@ -2,7 +2,12 @@ import os
 os.environ['PYOPENGL_PLATFORM'] = 'egl'
 
 import torch
-from gsplat import rasterization
+# [TPU MIGRATION] Disable gsplat import - not available on TPU
+try:
+    from gsplat import rasterization
+except ImportError:
+    rasterization = None
+    print("Info: gsplat not available, rendering features will be disabled (TPU Compatible)")
 from dust3r.utils.geometry import inv, geotrf
 from dust3r.utils.image import unpad_image
 import numpy as np
@@ -21,6 +26,10 @@ def render(
     scale: float = 0.002,
     opacity: float = 0.95,
 ):
+    # [TPU MIGRATION] Return None if gsplat is not available
+    if rasterization is None:
+        return None, None, None
+
 
     device = pts3d.device
     batch_size = len(intrinsics)

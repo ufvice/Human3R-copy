@@ -77,7 +77,9 @@ def train_one_epoch(
                 optimizer, data_iter_step / len_data_loader + epoch, args
             )
 
-        with torch.cuda.amp.autocast(enabled=bool(args.amp)):
+        # [TPU MIGRATION] Use device-agnostic autocast
+        device_type = 'xla' if str(device).startswith('xla') else 'cuda' if torch.cuda.is_available() else 'cpu'
+        with torch.autocast(device_type=device_type, enabled=bool(args.amp)):
             prediction = model(image1, image2)
             prediction, conf = split_prediction_conf(prediction, criterion.with_conf)
             batch_metrics = metrics(prediction.detach(), gt)
@@ -102,7 +104,8 @@ def train_one_epoch(
         if (data_iter_step + 1) % accum_iter == 0:
             optimizer.zero_grad()
 
-        torch.cuda.synchronize()
+        # [TPU MIGRATION] Remove CUDA synchronization - TPU/XLA handles this automatically
+        # torch.cuda.synchronize()
 
         metric_logger.update(loss=loss_value)
         for k, v in batch_metrics.items():
@@ -302,9 +305,14 @@ def tiled_pred(
     tiled_losses = []
 
     if return_time:
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
+        # [TPU MIGRATION] Guard CUDA Event creation
+        if torch.cuda.is_available():
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            start.record()
+        else:
+            import time
+            start = time.time()
 
     for sy1, sx1, sy2, sx2, aligned in crop_generator():
         # compute optical flow there
@@ -338,9 +346,13 @@ def tiled_pred(
     assert not torch.any(torch.isnan(pred))
 
     if return_time:
-        end.record()
-        torch.cuda.synchronize()
-        time = start.elapsed_time(end) / 1000.0  # this was in milliseconds
+        # [TPU MIGRATION] Guard CUDA synchronization
+        if torch.cuda.is_available():
+            end.record()
+            torch.cuda.synchronize()
+            time = start.elapsed_time(end) / 1000.0  # this was in milliseconds
+        else:
+            time = time.time() - start
 
     if do_change_scale:
         pred = _resize_stereo_or_flow(pred, original_size)

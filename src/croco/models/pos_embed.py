@@ -114,13 +114,14 @@ def interpolate_pos_embed(model, checkpoint_model):
 # RoPE2D: RoPE implementation in 2D
 # ----------------------------------------------------------
 
-try:
-    from models.curope import cuRoPE2D
-
-    RoPE2D = cuRoPE2D
-except ImportError:
+# [TPU MIGRATION] Force fallback to PyTorch implementation, bypassing CUDA extension
+# try:
+#     from models.curope import cuRoPE2D
+#     RoPE2D = cuRoPE2D
+# except ImportError:
+if True:  # Always use PyTorch fallback for TPU compatibility
     print(
-        "Warning, cannot find cuda-compiled version of RoPE2D, using a slow pytorch version instead"
+        "Info: Using PyTorch version of RoPE2D (TPU Compatible)"
     )
 
     class RoPE2D(torch.nn.Module):

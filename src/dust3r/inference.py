@@ -72,7 +72,9 @@ def loss_of_one_batch(
     if symmetrize_batch:
         batch = make_batch_symmetric(batch)
 
-    with torch.cuda.amp.autocast(enabled=not inference):
+    # [TPU MIGRATION] Use device-agnostic autocast - detect device from batch
+    device_type = str(batch[0]['img'].device).split(':')[0] if isinstance(batch, (list, tuple)) and len(batch) > 0 else 'cpu'
+    with torch.autocast(device_type=device_type, enabled=not inference):
         if inference:
             output, state_args = model(batch, ret_state=True, inference=True)
             preds, batch = output.ress, output.views
@@ -83,7 +85,8 @@ def loss_of_one_batch(
             output = model(batch)
             preds, batch = output.ress, output.views
 
-        with torch.cuda.amp.autocast(enabled=False):
+        # [TPU MIGRATION] Use device-agnostic autocast
+        with torch.autocast(device_type=device_type, enabled=False):
             loss = criterion(batch, preds) if criterion is not None else None
 
     result = dict(views=batch, pred=preds, loss=loss)
@@ -124,7 +127,9 @@ def inference_step(view, state_args, model, device, verbose=True):
         else:
             view[name] = view[name].to(device, non_blocking=True)
 
-    with torch.cuda.amp.autocast(enabled=False):
+    # [TPU MIGRATION] Use device-agnostic autocast - detect device from view
+    device_type = str(view['img'].device).split(':')[0] if 'img' in view else 'cpu'
+    with torch.autocast(device_type=device_type, enabled=False):
         state_feat, state_pos, init_state_feat, mem, init_mem = state_args
         pred, _ = model.inference_step(
             view, state_feat, state_pos, init_state_feat, mem, init_mem
@@ -152,7 +157,9 @@ def inference_recurrent(groups, model, device, verbose=True):
     if verbose:
         print(f">> Inference with model on {len(groups)} image/raymaps")
 
-    with torch.cuda.amp.autocast(enabled=False):
+    # [TPU MIGRATION] Use device-agnostic autocast - use provided device
+    device_type = str(device).split(':')[0]
+    with torch.autocast(device_type=device_type, enabled=False):
         preds, batch, state_args = model.forward_recurrent(
             groups, device, ret_state=True
         )
@@ -165,7 +172,9 @@ def inference_recurrent_lighter(groups, model, device, verbose=True, is_naive=Fa
     if verbose:
         print(f">> Inference with model on {len(groups)} image/raymaps")
 
-    with torch.cuda.amp.autocast(enabled=False):
+    # [TPU MIGRATION] Use device-agnostic autocast - use provided device
+    device_type = str(device).split(':')[0]
+    with torch.autocast(device_type=device_type, enabled=False):
         if is_naive:
             preds, batch, state_args = model.forward_recurrent_lighter_naive(
             groups, device, ret_state=True, use_ttt3r=use_ttt3r

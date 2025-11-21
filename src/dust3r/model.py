@@ -1709,10 +1709,16 @@ class ARCroco3DStereo(CroCoNet):
             ) * self.bb_patch_size  # Moving to higher res the location of the pelvis
 
             smpl_tk_mhmr = feat_central_mhmr.unsqueeze(0)  # use mhmr vit token
+            # current (possibly padded) image size used for token grid
+            img_h, img_w = view["img"].shape[-2:]
+            img_shape_head = torch.tensor(
+                [img_h, img_w],
+                device=shape.device,
+                dtype=shape.dtype,
+            ).unsqueeze(0).repeat(batch_size, 1)
 
             # CUT3R smpl tokenizer
             # recover patch grid from the (possibly padded) image size
-            img_h, img_w = view["img"].shape[-2:]
             patch_size = self.croco_args["patch_size"]
             n_patch_cut3r_h = img_h // patch_size
             n_patch_cut3r_w = img_w // patch_size
@@ -1808,7 +1814,7 @@ class ARCroco3DStereo(CroCoNet):
                 smpl_token_cat = None
             res = self._downstream_head(
                 head_input,
-                shape,
+                img_shape_head,
                 pos=pos_i,
                 n_humans=n_humans_i,
                 smpl_token=smpl_token_cat,
@@ -2117,7 +2123,15 @@ class ARCroco3DStereo(CroCoNet):
             else:
                 smpl_token = None
             res = self._downstream_head(
-                head_input, shape, pos=pos_i, n_humans=n_humans_i, smpl_token=smpl_token
+                head_input,
+                torch.tensor(
+                    [img_h, img_w],
+                    device=shape.device,
+                    dtype=shape.dtype,
+                ).unsqueeze(0).repeat(batch_size, 1),
+                pos=pos_i,
+                n_humans=n_humans_i,
+                smpl_token=smpl_token,
             )
 
             # tracking

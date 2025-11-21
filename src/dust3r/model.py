@@ -984,11 +984,13 @@ class ARCroco3DStereo(CroCoNet):
             feat_K = self.embedd_camera(K, [n_patch, n_patch]) # Embed viewing directions. [num_view * bs,h,w,99]
         
         if inference:
-            scores = nms(scores, kernel=3) # (num_view * bs, 1, h, w)
-            _scores = scores.permute((0, 2, 3, 1)) # (num_view * bs, h, w, 1)
-            # Binary decision (keep confident detections)
-            idx = apply_threshold(0.3, _scores)
-            img_id, h_id, w_id = idx[0], idx[1], idx[2]
+            # Always select exactly one person per image (Top-1 over all patches)
+            B, _, H, W = scores.shape
+            scores_flat = scores.view(B, -1)
+            top_idx = scores_flat.argmax(dim=1)
+            img_id = torch.arange(B, device=scores.device)
+            h_id = top_idx // W
+            w_id = top_idx % W
         else:
             smpl_mask = torch.stack([view["smpl_mask"] for view in views], dim=0)
             smpl_mask = smpl_mask.view(-1, *smpl_mask.shape[2:])

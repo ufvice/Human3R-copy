@@ -1672,10 +1672,15 @@ class ARCroco3DStereo(CroCoNet):
                 nw=n_patch_mhmr,
             )  # head token extraction: (num_view * bs, h, w, 1024)
 
+            # Use Top-1 selection to enforce static shapes on TPU
             scores = nms(scores, kernel=3)  # (num_view * bs, 1, h, w)
+            B_scores, C_scores, H_scores, W_scores = scores.shape
+            scores_flat = scores.view(B_scores, -1)  # (B, H * W)
+            best_idx = torch.argmax(scores_flat, dim=1)  # (B,)
+            img_id = torch.arange(B_scores, device=scores.device)
+            h_id = best_idx // W_scores
+            w_id = best_idx % W_scores
             scores = scores.permute((0, 2, 3, 1))  # (num_view * bs, h, w, 1)
-            idx = apply_threshold(0.3, scores)
-            img_id, h_id, w_id = idx[0], idx[1], idx[2]
 
             # Head token and offset
             feat_central_mhmr = feat_mhmr_i[img_id, h_id, w_id]  # (nvh, 1024)

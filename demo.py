@@ -34,6 +34,19 @@ import roma
 random.seed(42)
 
 
+def get_smpl_color(idx: int) -> np.ndarray:
+    """
+    Lightweight replacement for viser_utils.get_color to avoid importing viser.
+
+    Reads SMPL colors from src/models/smpl_colors.txt and returns the color
+    corresponding to the given index (wrapped by length).
+    """
+    root_dir = os.path.dirname(os.path.abspath(__file__))
+    colors_path = os.path.join(root_dir, "src/models/smpl_colors.txt")
+    colors = np.loadtxt(colors_path).astype(int)
+    return colors[idx % len(colors)]
+
+
 def parse_args():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
@@ -293,7 +306,6 @@ def prepare_output(
     from src.dust3r.utils.geometry import geotrf, matrix_cumprod
     from src.dust3r.utils import SMPL_Layer, vis_heatmap, render_meshes
     from src.dust3r.utils.image import unpad_image
-    from viser_utils import get_color
 
     # Only keep the outputs corresponding to one full pass.
     valid_length = len(outputs["pred"]) // revisit
@@ -418,10 +430,10 @@ def prepare_output(
                             person_center='head')
     smpl_faces = smpl_layer.bm_x.faces
 
-    # os.makedirs(os.path.join(outdir, "depth"), exist_ok=True)
-    # os.makedirs(os.path.join(outdir, "conf"), exist_ok=True)
-    # os.makedirs(os.path.join(outdir, "color"), exist_ok=True)
-    # os.makedirs(os.path.join(outdir, "camera"), exist_ok=True)
+    os.makedirs(os.path.join(outdir, "depth"), exist_ok=True)
+    os.makedirs(os.path.join(outdir, "conf"), exist_ok=True)
+    os.makedirs(os.path.join(outdir, "color"), exist_ok=True)
+    os.makedirs(os.path.join(outdir, "camera"), exist_ok=True)
 
     all_verts = []
     for f_id in range(B):
@@ -459,7 +471,7 @@ def prepare_output(
             smpl_rend = render_meshes(img_array_np.copy(), pr_verts, pr_faces,
                                         {'focal': intrins[[0,1],[0,1]], 
                                         'princpt': intrins[[0,1],[-1,-1]]},
-                                        color=[get_color(i)/255 for i in smpl_id[f_id]])
+                                        color=[get_smpl_color(i)/255 for i in smpl_id[f_id]])
             if has_mask:
                 msk_array_np = vis_heatmap(colors_tosave[f_id], msks[f_id][0]).numpy()
                 color_smpl = np.concatenate([
@@ -473,17 +485,17 @@ def prepare_output(
                     (hm * 255).astype(np.uint8), 
                     smpl_rend], 1)
         
-        # np.save(os.path.join(outdir, "depth", f"{f_id:06d}.npy"), depth)
-        # np.save(os.path.join(outdir, "conf", f"{f_id:06d}.npy"), conf)
-        # iio.imwrite(
-        #     os.path.join(outdir, "color", f"{f_id:06d}.png"),
-        #     (color * 255).astype(np.uint8),
-        # )
-        # np.savez(
-        #     os.path.join(outdir, "camera", f"{f_id:06d}.npz"),
-        #     pose=c2w,
-        #     intrinsics=intrins,
-        # )
+        np.save(os.path.join(outdir, "depth", f"{f_id:06d}.npy"), depth)
+        np.save(os.path.join(outdir, "conf", f"{f_id:06d}.npy"), conf)
+        iio.imwrite(
+            os.path.join(outdir, "color", f"{f_id:06d}.png"),
+            (color * 255).astype(np.uint8),
+        )
+        np.savez(
+            os.path.join(outdir, "camera", f"{f_id:06d}.npz"),
+            pose=c2w,
+            intrinsics=intrins,
+        )
 
         # Save smpl results
         if save_smpl:
@@ -492,16 +504,16 @@ def prepare_output(
                 os.path.join(outdir, "color_smpl", f"{f_id:06d}.png"),
                 color_smpl,
             )
-            # os.makedirs(os.path.join(outdir, "smpl"), exist_ok=True)
-            # np.savez(
-            #     os.path.join(outdir, "smpl", f"{f_id:06d}.npz"),
-            #     scores=smpl_scores[f_id].numpy(),
-            #     msk=msks[f_id].numpy() if has_mask else None,
-            #     shape=smpl_shape[f_id].numpy(),
-            #     rotvec=smpl_rotvec[f_id].numpy(),
-            #     transl=smpl_transl[f_id].numpy(),
-            #     expression=smpl_expression[f_id].numpy() if smpl_expression[f_id] is not None else None
-            # )
+            os.makedirs(os.path.join(outdir, "smpl"), exist_ok=True)
+            np.savez(
+                os.path.join(outdir, "smpl", f"{f_id:06d}.npz"),
+                scores=smpl_scores[f_id].numpy(),
+                msk=msks[f_id].numpy() if has_mask else None,
+                shape=smpl_shape[f_id].numpy(),
+                rotvec=smpl_rotvec[f_id].numpy(),
+                transl=smpl_transl[f_id].numpy(),
+                expression=smpl_expression[f_id].numpy() if smpl_expression[f_id] is not None else None
+            )
 
     if save_smpl and save_video:
         frames_dir = os.path.join(outdir, "color_smpl")
@@ -588,7 +600,6 @@ def run_inference(args):
     # Import model and inference functions after adding the ckpt path.
     from src.dust3r.inference import inference_recurrent_lighter
     from src.dust3r.model import ARCroco3DStereo
-    from viser_utils import SceneHumanViewer
 
     # Prepare image file paths.
     img_paths, tmpdirname = parse_seq_path(args.seq_path)
@@ -635,53 +646,13 @@ def run_inference(args):
         f"Inference completed in {total_time:.2f} seconds (average {per_frame_time:.2f} s per frame)."
     )
 
-    # Process outputs for visualization.
-    print("Preparing output for visualization...")
-    (
-        pts3ds_other, 
-        colors, 
-        conf, 
-        cam_dict, 
-        all_smpl_verts, 
-        smpl_faces,
-        smpl_id,
-        msks,
-        ) = prepare_output(
+    # Process outputs and save numerical results to files.
+    print("Processing outputs and saving to disk...")
+    _ = prepare_output(
         outputs, args.output_dir, 1, True, 
         args.save_smpl, args.save_video, img_res, args.subsample
     )
-
-    # Convert tensors to numpy arrays for visualization.
-    pts3ds_to_vis = [p.cpu().numpy() for p in pts3ds_other]
-    colors_to_vis = [c.cpu().numpy() for c in colors]
-    msks_to_vis = [m.cpu().numpy() for m in msks]
-    conf_to_vis = [c.cpu().numpy() for c in conf]
-    edge_colors = [None] * len(pts3ds_to_vis)
-    verts_to_vis = [p.cpu().numpy() for p in all_smpl_verts]
-
-    # Create and run the point cloud viewer.
-    print("Launching point cloud viewer...")
-    viewer = SceneHumanViewer(
-        pts3ds_to_vis,
-        colors_to_vis,
-        conf_to_vis,
-        cam_dict,
-        verts_to_vis,
-        smpl_faces,
-        smpl_id,
-        msks_to_vis,
-        device=device,
-        edge_color_list=edge_colors,
-        show_camera=True,
-        vis_threshold=args.vis_threshold,
-        msk_threshold=args.msk_threshold,
-        mask_morph=args.mask_morph,
-        size = args.size,
-        downsample_factor=args.downsample_factor,
-        smpl_downsample_factor=args.smpl_downsample,
-        camera_downsample_factor=args.camera_downsample
-    )
-    viewer.run()
+    print(f"All outputs have been saved under: {args.output_dir}")
 
 
 def main():

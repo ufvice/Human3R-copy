@@ -691,12 +691,9 @@ def run_inference(args):
 
     try:
         if is_xla and xp is not None:
-            trace_dir = "/tmp/xla_prof_human3r"
-            print(f"[XLA] Profiling trace will be saved to: {trace_dir}")
-            with xp.trace("human3r_inference", logdir=trace_dir):
-                outputs, _ = inference_recurrent_lighter(
-                    views, model, device, use_ttt3r=args.use_ttt3r
-                )
+            outputs, _ = inference_recurrent_lighter(
+                views, model, device, use_ttt3r=args.use_ttt3r
+            )
         else:
             outputs, _ = inference_recurrent_lighter(
                 views, model, device, use_ttt3r=args.use_ttt3r

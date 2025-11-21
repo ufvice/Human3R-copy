@@ -36,7 +36,6 @@ from dust3r.datasets import get_data_loader
 from dust3r.losses import *  # noqa: F401, needed when loading the model
 from dust3r.inference import loss_of_one_batch  # noqa
 from dust3r.viz import colorize
-from dust3r.utils.render import get_render_results, get_render_smpl
 import dust3r.utils.path_to_croco  # noqa: F401
 import croco.utils.misc as misc  # noqa
 from croco.utils.misc import NativeScalerWithGradNormCount as NativeScaler  # noqa
@@ -453,7 +452,6 @@ def train_one_epoch(
                 )
             else:
                 NotImplementedError("Long context is not supported")
-            has_msk = "msk" in result["pred"][0]
             loss, loss_details = result["loss"]  # criterion returns two values
             loss_value = float(loss)
 
@@ -472,15 +470,7 @@ def train_one_epoch(
                 )
                 optimizer.zero_grad()
 
-            is_metric = batch[0]["is_metric"]
-            curr_num_view = len(batch)
-
             del loss
-            tb_vis_img = (data_iter_step + 1) % accum_iter == 0 and (
-                (step + 1) % (args.print_img_freq)
-            ) == 0
-            if not tb_vis_img:
-                del batch
 
             lr = optimizer.param_groups[0]["lr"]
             metric_logger.update(epoch=epoch_f)
@@ -512,44 +502,7 @@ def train_one_epoch(
                     if isinstance(val, dict):
                         continue
                     log_writer.add_scalar("train_" + name, val, step)
-
-            if tb_vis_img:
-                if log_writer is None:
-                    continue
-                with torch.no_grad():
-                    depths_self, gt_depths_self = get_render_results(
-                        batch, result["pred"], self_view=True
-                    )
-                    depths_cross, gt_depths_cross = get_render_results(
-                        batch, result["pred"], self_view=False
-                    )
-                    gt_msks, pr_msks, gt_hms, pr_hms, gt_smpls, pr_smpls = get_render_smpl(
-                        batch, result["pred"], smpl_model, loss_details, has_msk=has_msk
-                    )
-                    for k in range(len(batch)):
-                        loss_details[f"self_pred_depth_{k+1}"] = depths_self[k].detach().cpu()
-                        loss_details[f"self_gt_depth_{k+1}"] = gt_depths_self[k].detach().cpu()
-                        loss_details[f"pred_depth_{k+1}"] = depths_cross[k].detach().cpu()
-                        loss_details[f"gt_depth_{k+1}"] = gt_depths_cross[k].detach().cpu()           
-                        loss_details[f"pred_hm_{k+1}"] = pr_hms[k].detach().cpu()
-                        loss_details[f"gt_hm_{k+1}"] = gt_hms[k].detach().cpu()
-                        loss_details[f"pred_smpl_rend_{k+1}"] = pr_smpls[k].detach().cpu()
-                        loss_details[f"gt_smpl_rend_{k+1}"] = gt_smpls[k].detach().cpu()
-                        if has_msk:
-                            loss_details[f"pred_msk_{k+1}"] = pr_msks[k].detach().cpu()
-                            loss_details[f"gt_msk_{k+1}"] = gt_msks[k].detach().cpu()
-
-                imgs_stacked_dict = get_vis_imgs_new(
-                    loss_details, 
-                    args.num_imgs_vis, 
-                    curr_num_view, 
-                    is_metric=is_metric, 
-                    has_msk=has_msk)
-                for name, imgs_stacked in imgs_stacked_dict.items():
-                    log_writer.add_images(
-                        "train" + "/" + name, imgs_stacked, step, dataformats="HWC"
-                    )
-                del batch
+            del batch
 
         if (
             data_iter_step % int(args.save_freq * len(data_loader)) == 0
@@ -610,7 +563,6 @@ def test_one_epoch(
             smpl_model=smpl_model
         )
 
-        has_msk = "msk" in result["pred"][0]
         loss_value, loss_details = result["loss"]  # criterion returns two values
         metric_logger.update(loss=float(loss_value), **loss_details)
 
@@ -631,40 +583,6 @@ def test_one_epoch(
             if isinstance(val, dict):
                 continue
             log_writer.add_scalar(prefix + "_" + name, val, 1000 * epoch)
-
-        depths_self, gt_depths_self = get_render_results(
-            batch, result["pred"], self_view=True
-        )
-        depths_cross, gt_depths_cross = get_render_results(
-            batch, result["pred"], self_view=False
-        )
-        gt_msks, pr_msks, gt_hms, pr_hms, gt_smpls, pr_smpls = get_render_smpl(
-            batch, result["pred"], smpl_model, loss_details, has_msk=has_msk
-        )
-        for k in range(len(batch)):
-            loss_details[f"self_pred_depth_{k+1}"] = depths_self[k].detach().cpu()
-            loss_details[f"self_gt_depth_{k+1}"] = gt_depths_self[k].detach().cpu()
-            loss_details[f"pred_depth_{k+1}"] = depths_cross[k].detach().cpu()
-            loss_details[f"gt_depth_{k+1}"] = gt_depths_cross[k].detach().cpu()
-            loss_details[f"pred_hm_{k+1}"] = pr_hms[k].detach().cpu()
-            loss_details[f"gt_hm_{k+1}"] = gt_hms[k].detach().cpu()
-            loss_details[f"pred_smpl_rend_{k+1}"] = pr_smpls[k].detach().cpu()
-            loss_details[f"gt_smpl_rend_{k+1}"] = gt_smpls[k].detach().cpu()
-            if has_msk:
-                loss_details[f"pred_msk_{k+1}"] = pr_msks[k].detach().cpu()
-                loss_details[f"gt_msk_{k+1}"] = gt_msks[k].detach().cpu()
-
-        imgs_stacked_dict = get_vis_imgs_new(
-            loss_details,
-            args.num_imgs_vis,
-            args.num_test_views,
-            is_metric=batch[0]["is_metric"],
-            has_msk=has_msk
-        )
-        for name, imgs_stacked in imgs_stacked_dict.items():
-            log_writer.add_images(
-                prefix + "/" + name, imgs_stacked, 1000 * epoch, dataformats="HWC"
-            )
 
     del loss_details, loss_value, batch
 

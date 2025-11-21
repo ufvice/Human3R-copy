@@ -1711,18 +1711,22 @@ class ARCroco3DStereo(CroCoNet):
             smpl_tk_mhmr = feat_central_mhmr.unsqueeze(0)  # use mhmr vit token
 
             # CUT3R smpl tokenizer
-            n_patch_cut3r = shape[0] // self.croco_args["patch_size"]  # H,W
+            # recover patch grid from the (possibly padded) image size
+            img_h, img_w = view["img"].shape[-2:]
+            patch_size = self.croco_args["patch_size"]
+            n_patch_cut3r_h = img_h // patch_size
+            n_patch_cut3r_w = img_w // patch_size
             feat_cut3r_i = rearrange(
                 feat_i,
                 "b (nh nw) c -> b nh nw c",
-                nh=n_patch_cut3r[0],
-                nw=n_patch_cut3r[1],
+                nh=n_patch_cut3r_h,
+                nw=n_patch_cut3r_w,
             )  # (num_view * bs, h, w, 1024)
             pos_cut3r_i = rearrange(
                 pos_i,
                 "b (nh nw) c -> b nh nw c",
-                nh=n_patch_cut3r[0],
-                nw=n_patch_cut3r[1],
+                nh=n_patch_cut3r_h,
+                nw=n_patch_cut3r_w,
             )  # (num_view * bs, h, w, 2)
 
             loc_cut3r = unpad_uv(loc, self.mhmr_img_res, *shape[0])

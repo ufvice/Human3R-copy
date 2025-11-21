@@ -33,6 +33,18 @@ import roma
 # Set random seed for reproducibility.
 random.seed(42)
 
+import torch
+
+try:
+    import torch_xla.core.xla_model as xm
+    import torch_xla
+
+    # 手动将 torch_xla 挂载为 torch.xla
+    if not hasattr(torch, "xla"):
+        torch.xla = torch_xla
+except ImportError:
+    print("手动将 torch_xla 挂载为 torch.xla 失败")
+    pass
 
 def get_smpl_color(idx: int) -> np.ndarray:
     """

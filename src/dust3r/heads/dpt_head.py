@@ -41,7 +41,9 @@ class DPTOutputAdapter_fix(DPTOutputAdapter):
         del self.act_3_postprocess
         del self.act_4_postprocess
 
-    def forward(self, encoder_tokens: List[torch.Tensor], image_size=None, ret_feat=False):
+    def forward(
+        self, encoder_tokens: List[torch.Tensor], image_size=None, ret_feat=False
+    ):
         assert (
             self.dim_tokens_enc is not None
         ), "Need to call init(dim_tokens_enc) function first"
@@ -72,7 +74,7 @@ class DPTOutputAdapter_fix(DPTOutputAdapter):
         path_1 = self.scratch.refinenet1(path_2, layers[0])
 
         out = self.head(path_1)
-        
+
         if ret_feat:
             return out, path_1
 
@@ -235,7 +237,7 @@ class DPTPts3dPose(nn.Module):
                 self.dpt_self,
                 x,
                 image_size=(img_info[0], img_info[1]),
-                use_reentrant=False,
+                use_reentrant=True,
             )
 
             final_output = postprocess(self_out, self.depth_mode, self.conf_mode)
@@ -247,7 +249,7 @@ class DPTPts3dPose(nn.Module):
                     self.dpt_rgb,
                     x,
                     image_size=(img_info[0], img_info[1]),
-                    use_reentrant=False,
+                    use_reentrant=True,
                 )
                 rgb_output = postprocess_rgb(rgb_out)
                 final_output.update(rgb_output)
@@ -259,7 +261,7 @@ class DPTPts3dPose(nn.Module):
                     self.dpt_cross,
                     x_cross,
                     image_size=(img_info[0], img_info[1]),
-                    use_reentrant=False,
+                    use_reentrant=True,
                 )
                 tmp = postprocess(cross_out, self.depth_mode, self.conf_mode)
                 final_output["pts3d_in_other_view"] = tmp.pop("pts3d")
@@ -268,7 +270,9 @@ class DPTPts3dPose(nn.Module):
 
 
 class DPTPts3dPoseSMPL(nn.Module):
-    def __init__(self, net, has_conf=False, has_rgb=False, has_pose=False, has_msk=False):
+    def __init__(
+        self, net, has_conf=False, has_rgb=False, has_pose=False, has_msk=False
+    ):
         super(DPTPts3dPoseSMPL, self).__init__()
         self.return_all_layers = True  # backbone needs to return all layers
         self.depth_mode = net.depth_mode
@@ -347,17 +351,25 @@ class DPTPts3dPoseSMPL(nn.Module):
         # MHMR Heads - Detection
         backbone_dim = net.backbone_dim
         self.bb_patch_size = net.bb_patch_size
-        self.mlp_classif = regression_mlp([backbone_dim, backbone_dim, 1]) # bg or human
-        self.mlp_offset = regression_mlp([backbone_dim, backbone_dim, 2]) # offset
+        self.mlp_classif = regression_mlp(
+            [backbone_dim, backbone_dim, 1]
+        )  # bg or human
+        self.mlp_offset = regression_mlp([backbone_dim, backbone_dim, 2])  # offset
         if has_msk:
             self.mlp_msk = SMPLDecoder(
-                hidden_size=backbone_dim, target_dim=self.bb_patch_size**2, num_layers=2, mlp_ratio=1)
+                hidden_size=backbone_dim,
+                target_dim=self.bb_patch_size**2,
+                num_layers=2,
+                mlp_ratio=1,
+            )
 
         # feature fuse
-        self.mlp_fuse = SMPLDecoder(hidden_size=ed+backbone_dim, target_dim=dd, num_layers=2, mlp_ratio=4)
+        self.mlp_fuse = SMPLDecoder(
+            hidden_size=ed + backbone_dim, target_dim=dd, num_layers=2, mlp_ratio=4
+        )
 
         # SMPL
-        self.joint_rep_type, self.joint_rep_dim = '6d', 6
+        self.joint_rep_type, self.joint_rep_dim = "6d", 6
         self.nrot = 53
         self.num_body_joints = self.nrot - 1
 
@@ -370,53 +382,71 @@ class DPTPts3dPoseSMPL(nn.Module):
 
         # SMPL param heads
         self.deccam = SMPLDecoder(
-                        hidden_size=in_dim, 
-                        target_dim=3, 
-                        num_layers=2, 
-                        mlp_ratio=4)
+            hidden_size=in_dim, target_dim=3, num_layers=2, mlp_ratio=4
+        )
         self.decpose, self.decshape, self.decexpression = [
             SMPLDecoder(
-                hidden_size=in_dim+backbone_dim, 
-                target_dim=od, 
-                num_layers=2, 
-                mlp_ratio=4) for od in [self.npose, self.num_betas, 10]]
+                hidden_size=in_dim + backbone_dim,
+                target_dim=od,
+                num_layers=2,
+                mlp_ratio=4,
+            )
+            for od in [self.npose, self.num_betas, 10]
+        ]
 
         self.set_smpl_init()
 
-
     def set_smpl_init(self):
-        """ Fetch saved SMPL parameters and register buffers."""
+        """Fetch saved SMPL parameters and register buffers."""
         mean_params = np.load(MEAN_PARAMS)
         if self.nrot == 53:
-            init_body_pose = torch.eye(3).reshape(1,3,3).repeat(self.nrot,1,1)[:,:,:2].flatten(1).reshape(1, -1)
-            init_body_pose[:,:24*6] = torch.from_numpy(mean_params['pose'][:]).float() # global_orient+body_pose from SMPL
+            init_body_pose = (
+                torch.eye(3)
+                .reshape(1, 3, 3)
+                .repeat(self.nrot, 1, 1)[:, :, :2]
+                .flatten(1)
+                .reshape(1, -1)
+            )
+            init_body_pose[:, : 24 * 6] = torch.from_numpy(
+                mean_params["pose"][:]
+            ).float()  # global_orient+body_pose from SMPL
         else:
-            init_body_pose = torch.from_numpy(mean_params['pose'].astype(np.float32)).unsqueeze(0)
+            init_body_pose = torch.from_numpy(
+                mean_params["pose"].astype(np.float32)
+            ).unsqueeze(0)
 
-        init_betas = torch.from_numpy(mean_params['shape'].astype('float32')).unsqueeze(0)
-        init_cam = torch.from_numpy(mean_params['cam'].astype(np.float32)).unsqueeze(0)
-        init_betas_kid = torch.cat([init_betas, torch.zeros_like(init_betas[:,[0]])],1)
-        init_expression = 0. * torch.from_numpy(mean_params['shape'].astype('float32')).unsqueeze(0)
+        init_betas = torch.from_numpy(mean_params["shape"].astype("float32")).unsqueeze(
+            0
+        )
+        init_cam = torch.from_numpy(mean_params["cam"].astype(np.float32)).unsqueeze(0)
+        init_betas_kid = torch.cat(
+            [init_betas, torch.zeros_like(init_betas[:, [0]])], 1
+        )
+        init_expression = 0.0 * torch.from_numpy(
+            mean_params["shape"].astype("float32")
+        ).unsqueeze(0)
 
         if self.num_betas == 11:
-            init_betas = torch.cat([init_betas, torch.zeros_like(init_betas[:,:1])], 1)
+            init_betas = torch.cat([init_betas, torch.zeros_like(init_betas[:, :1])], 1)
 
-        self.register_buffer('init_body_pose', init_body_pose)
-        self.register_buffer('init_betas', init_betas)
-        self.register_buffer('init_betas_kid', init_betas_kid)
-        self.register_buffer('init_cam', init_cam)
-        self.register_buffer('init_expression', init_expression)
-        
+        self.register_buffer("init_body_pose", init_body_pose)
+        self.register_buffer("init_betas", init_betas)
+        self.register_buffer("init_betas_kid", init_betas_kid)
+        self.register_buffer("init_cam", init_cam)
+        self.register_buffer("init_expression", init_expression)
+
     def detect_mhmr(self, x):
         with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
-            scores = postprocess_score(self.mlp_classif(x)) # per token detection score.
+            scores = postprocess_score(
+                self.mlp_classif(x)
+            )  # per token detection score.
         return scores
 
     def segment(self, x):
         with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
             msks = postprocess_score(self.mlp_msk(x))
         return msks
-    
+
     def forward(self, x, img_info, **kwargs):
         if self.has_pose:
             pose_token = x[-1][:, 0].clone()
@@ -426,13 +456,17 @@ class DPTPts3dPoseSMPL(nn.Module):
             with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
                 pose = self.pose_head(pose_token)
                 if n_humans_i > 0:
-                    smpl_token = kwargs.get("smpl_token")   # CUT3R smpl token (bs, 10, 768)
+                    smpl_token = kwargs.get(
+                        "smpl_token"
+                    )  # CUT3R smpl token (bs, 10, 768)
                     pred_body_pose = self.decpose(smpl_token) + self.init_body_pose
                     pred_betas = self.decshape(smpl_token) + self.init_betas
-                    pred_cam = self.deccam(smpl_token[..., :self.in_dim])
-                    pred_expression = self.decexpression(smpl_token) + self.init_expression
+                    pred_cam = self.deccam(smpl_token[..., : self.in_dim])
+                    pred_expression = (
+                        self.decexpression(smpl_token) + self.init_expression
+                    )
                     pred_smpl = [pred_body_pose, pred_betas, pred_cam, pred_expression]
-                    
+
             token_cross = token.clone()
             for blk in self.final_transform:
                 token_cross = blk(token_cross, pose_token, kwargs.get("pos"))
@@ -445,7 +479,7 @@ class DPTPts3dPoseSMPL(nn.Module):
                 x,
                 image_size=(img_info[0], img_info[1]),
                 # ret_feat=True,
-                use_reentrant=False,
+                use_reentrant=True,
             )
 
             final_output = postprocess(self_out, self.depth_mode, self.conf_mode)
@@ -457,7 +491,7 @@ class DPTPts3dPoseSMPL(nn.Module):
                     self.dpt_rgb,
                     x,
                     image_size=(img_info[0], img_info[1]),
-                    use_reentrant=False,
+                    use_reentrant=True,
                 )
                 rgb_output = postprocess_rgb(rgb_out)
                 final_output.update(rgb_output)
@@ -469,12 +503,12 @@ class DPTPts3dPoseSMPL(nn.Module):
                     self.dpt_cross,
                     x_cross,
                     image_size=(img_info[0], img_info[1]),
-                    use_reentrant=False,
+                    use_reentrant=True,
                 )
                 tmp = postprocess(cross_out, self.depth_mode, self.conf_mode)
                 final_output["pts3d_in_other_view"] = tmp.pop("pts3d")
                 final_output["conf"] = tmp.pop("conf")
-            
+
             if n_humans_i > 0:
                 smpl_out = postprocess_smpl(pred_smpl, self.depth_mode)
                 final_output.update(smpl_out)
@@ -560,11 +594,13 @@ class NaiveDPTPts3dPoseSMPL(nn.Module):
         # MHMR Heads - Detection
         backbone_dim = net.backbone_dim
         self.bb_patch_size = net.bb_patch_size
-        self.mlp_classif = regression_mlp([backbone_dim, backbone_dim, 1]) # bg or human
-        self.mlp_offset = regression_mlp([backbone_dim, backbone_dim, 2]) # offset
+        self.mlp_classif = regression_mlp(
+            [backbone_dim, backbone_dim, 1]
+        )  # bg or human
+        self.mlp_offset = regression_mlp([backbone_dim, backbone_dim, 2])  # offset
 
         # SMPL
-        self.joint_rep_type, self.joint_rep_dim = '6d', 6
+        self.joint_rep_type, self.joint_rep_dim = "6d", 6
         self.nrot = 53
         self.num_body_joints = self.nrot - 1
 
@@ -577,38 +613,57 @@ class NaiveDPTPts3dPoseSMPL(nn.Module):
 
         # MHMR Heads - SMPL
         self.decpose, self.decshape, self.deccam, self.decexpression = [
-            nn.Linear(1024, od) for od in [self.npose, self.num_betas, 3, 10]] # MLP(1024, x)
+            nn.Linear(1024, od) for od in [self.npose, self.num_betas, 3, 10]
+        ]  # MLP(1024, x)
 
         self.set_smpl_init()
 
     def set_smpl_init(self):
-        """ Fetch saved SMPL parameters and register buffers."""
+        """Fetch saved SMPL parameters and register buffers."""
         mean_params = np.load(MEAN_PARAMS)
         if self.nrot == 53:
-            init_body_pose = torch.eye(3).reshape(1,3,3).repeat(self.nrot,1,1)[:,:,:2].flatten(1).reshape(1, -1)
-            init_body_pose[:,:24*6] = torch.from_numpy(mean_params['pose'][:]).float() # global_orient+body_pose from SMPL
+            init_body_pose = (
+                torch.eye(3)
+                .reshape(1, 3, 3)
+                .repeat(self.nrot, 1, 1)[:, :, :2]
+                .flatten(1)
+                .reshape(1, -1)
+            )
+            init_body_pose[:, : 24 * 6] = torch.from_numpy(
+                mean_params["pose"][:]
+            ).float()  # global_orient+body_pose from SMPL
         else:
-            init_body_pose = torch.from_numpy(mean_params['pose'].astype(np.float32)).unsqueeze(0)
+            init_body_pose = torch.from_numpy(
+                mean_params["pose"].astype(np.float32)
+            ).unsqueeze(0)
 
-        init_betas = torch.from_numpy(mean_params['shape'].astype('float32')).unsqueeze(0)
-        init_cam = torch.from_numpy(mean_params['cam'].astype(np.float32)).unsqueeze(0)
-        init_betas_kid = torch.cat([init_betas, torch.zeros_like(init_betas[:,[0]])],1)
-        init_expression = 0. * torch.from_numpy(mean_params['shape'].astype('float32')).unsqueeze(0)
+        init_betas = torch.from_numpy(mean_params["shape"].astype("float32")).unsqueeze(
+            0
+        )
+        init_cam = torch.from_numpy(mean_params["cam"].astype(np.float32)).unsqueeze(0)
+        init_betas_kid = torch.cat(
+            [init_betas, torch.zeros_like(init_betas[:, [0]])], 1
+        )
+        init_expression = 0.0 * torch.from_numpy(
+            mean_params["shape"].astype("float32")
+        ).unsqueeze(0)
 
         if self.num_betas == 11:
-            init_betas = torch.cat([init_betas, torch.zeros_like(init_betas[:,:1])], 1)
+            init_betas = torch.cat([init_betas, torch.zeros_like(init_betas[:, :1])], 1)
 
-        self.register_buffer('init_body_pose', init_body_pose)
-        self.register_buffer('init_betas', init_betas)
-        self.register_buffer('init_betas_kid', init_betas_kid)
-        self.register_buffer('init_cam', init_cam)
-        self.register_buffer('init_expression', init_expression)
-        
+        self.register_buffer("init_body_pose", init_body_pose)
+        self.register_buffer("init_betas", init_betas)
+        self.register_buffer("init_betas_kid", init_betas_kid)
+        self.register_buffer("init_cam", init_cam)
+        self.register_buffer("init_expression", init_expression)
+
     def detect_mhmr(self, x):
         with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
-            scores = postprocess_score(self.mlp_classif(x)) # per token detection score.
+            scores = postprocess_score(
+                self.mlp_classif(x)
+            )  # per token detection score.
         return scores
-      
+
     def forward(self, x, img_info, **kwargs):
         if self.has_pose:
             pose_token = x[-1][:, 0].clone()
@@ -618,9 +673,19 @@ class NaiveDPTPts3dPoseSMPL(nn.Module):
             with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
                 pose = self.pose_head(pose_token)
                 if n_humans_i > 0:
-                    smpl_token = kwargs.get("smpl_token") 
-                    decoders = [self.decpose, self.decshape, self.deccam, self.decexpression]
-                    inits = [self.init_body_pose, self.init_betas, self.init_cam, self.init_expression]
+                    smpl_token = kwargs.get("smpl_token")
+                    decoders = [
+                        self.decpose,
+                        self.decshape,
+                        self.deccam,
+                        self.decexpression,
+                    ]
+                    inits = [
+                        self.init_body_pose,
+                        self.init_betas,
+                        self.init_cam,
+                        self.init_expression,
+                    ]
                     pred_smpl = [d(smpl_token) + i for d, i in zip(decoders, inits)]
 
             token_cross = token.clone()
@@ -634,7 +699,7 @@ class NaiveDPTPts3dPoseSMPL(nn.Module):
                 self.dpt_self,
                 x,
                 image_size=(img_info[0], img_info[1]),
-                use_reentrant=False,
+                use_reentrant=True,
             )
 
             final_output = postprocess(self_out, self.depth_mode, self.conf_mode)
@@ -646,7 +711,7 @@ class NaiveDPTPts3dPoseSMPL(nn.Module):
                     self.dpt_rgb,
                     x,
                     image_size=(img_info[0], img_info[1]),
-                    use_reentrant=False,
+                    use_reentrant=True,
                 )
                 rgb_output = postprocess_rgb(rgb_out)
                 final_output.update(rgb_output)
@@ -658,12 +723,12 @@ class NaiveDPTPts3dPoseSMPL(nn.Module):
                     self.dpt_cross,
                     x_cross,
                     image_size=(img_info[0], img_info[1]),
-                    use_reentrant=False,
+                    use_reentrant=True,
                 )
                 tmp = postprocess(cross_out, self.depth_mode, self.conf_mode)
                 final_output["pts3d_in_other_view"] = tmp.pop("pts3d")
                 final_output["conf"] = tmp.pop("conf")
-            
+
             if n_humans_i > 0:
                 smpl_out = postprocess_smpl(pred_smpl, self.depth_mode, naive_mode=True)
                 final_output.update(smpl_out)

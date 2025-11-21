@@ -15,7 +15,6 @@ import time
 
 import torch
 import torch.distributed as dist
-import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
@@ -212,7 +211,6 @@ def main(args):
     seed = args.seed + misc.get_rank()
     torch.manual_seed(seed)
     np.random.seed(seed)
-    cudnn.benchmark = True
 
     # Metrics / criterion
     if xm is not None:

@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Sized
 
 import torch
-import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 
@@ -151,7 +150,6 @@ def train(args):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-    cudnn.benchmark = args.benchmark
 
     # training dataset and loader
     printer.info("Building train dataset %s", args.train_dataset)

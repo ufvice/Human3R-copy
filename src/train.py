@@ -24,8 +24,6 @@ from torch.utils.tensorboard import SummaryWriter
 
 from dust3r.utils.device import todevice
 
-torch.backends.cuda.matmul.allow_tf32 = True  # for gpu >= Ampere and pytorch >= 1.12
-
 from dust3r.model import (
     PreTrainedModel,
     ARCroco3DStereo,
@@ -383,7 +381,7 @@ def build_dataset(dataset, batch_size, num_workers, accelerator, test=False, fix
         dataset,
         batch_size=batch_size,
         num_workers=num_workers,
-        pin_mem=True,
+        pin_mem=False,
         shuffle=not (test),
         drop_last=not (test),
         accelerator=accelerator,
@@ -404,8 +402,6 @@ def train_one_epoch(
     log_writer=None,
     smpl_model: SMPLModel = None
 ):
-    assert torch.backends.cuda.matmul.allow_tf32 == True
-
     model.train(True)
     metric_logger = misc.MetricLogger(delimiter="  ")
     metric_logger.add_meter("lr", misc.SmoothedValue(window_size=1, fmt="{value:.6f}"))
@@ -487,8 +483,6 @@ def train_one_epoch(
             ) == 0
             if not tb_vis_img:
                 del batch
-            else:
-                torch.cuda.empty_cache()
 
             lr = optimizer.param_groups[0]["lr"]
             metric_logger.update(epoch=epoch_f)
@@ -675,7 +669,6 @@ def test_one_epoch(
             )
 
     del loss_details, loss_value, batch
-    torch.cuda.empty_cache()
 
     return results
 

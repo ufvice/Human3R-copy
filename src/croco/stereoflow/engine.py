@@ -7,10 +7,15 @@
 
 import math
 import sys
+import time
 from typing import Iterable
 import numpy as np
 import torch
 import torchvision
+try:
+    import torch_xla.core.xla_model as xm  # type: ignore
+except ImportError:
+    xm = None
 
 from utils import misc as misc
 
@@ -63,7 +68,7 @@ def train_one_epoch(
 
     for data_iter_step, (image1, image2, gt, pairname) in enumerate(
         metric_logger.log_every(
-            data_loader, print_freq, header, max_iter=iter_per_epoch
+            data_loader, print_freq, header=header, max_iter=iter_per_epoch
         )
     ):
 
@@ -77,7 +82,9 @@ def train_one_epoch(
                 optimizer, data_iter_step / len_data_loader + epoch, args
             )
 
-        with torch.cuda.amp.autocast(enabled=bool(args.amp)):
+        with torch.autocast(
+            device_type="xla", dtype=torch.bfloat16, enabled=bool(args.amp)
+        ):
             prediction = model(image1, image2)
             prediction, conf = split_prediction_conf(prediction, criterion.with_conf)
             batch_metrics = metrics(prediction.detach(), gt)
@@ -102,7 +109,10 @@ def train_one_epoch(
         if (data_iter_step + 1) % accum_iter == 0:
             optimizer.zero_grad()
 
-        torch.cuda.synchronize()
+        if xm is not None and device.type == "xla":
+            xm.mark_step()
+        elif torch.cuda.is_available():
+            torch.cuda.synchronize()
 
         metric_logger.update(loss=loss_value)
         for k, v in batch_metrics.items():
@@ -160,7 +170,7 @@ def validate_one_epoch(
         dnames.append(dname)
         metric_loggers.append(misc.MetricLogger(delimiter="  "))
         for data_iter_step, (image1, image2, gt, pairname) in enumerate(
-            metric_loggers[didx].log_every(data_loader, print_freq, header)
+            metric_loggers[didx].log_every(data_loader, print_freq, header=header)
         ):
             image1 = image1.to(device, non_blocking=True)
             image2 = image2.to(device, non_blocking=True)
@@ -302,9 +312,13 @@ def tiled_pred(
     tiled_losses = []
 
     if return_time:
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
+        use_cuda_timing = torch.cuda.is_available() and img1.device.type == "cuda"
+        start_event = end_event = None
+        start_time = time.time()
+        if use_cuda_timing:
+            start_event = torch.cuda.Event(enable_timing=True)
+            end_event = torch.cuda.Event(enable_timing=True)
+            start_event.record()
 
     for sy1, sx1, sy2, sx2, aligned in crop_generator():
         # compute optical flow there
@@ -338,15 +352,23 @@ def tiled_pred(
     assert not torch.any(torch.isnan(pred))
 
     if return_time:
-        end.record()
-        torch.cuda.synchronize()
-        time = start.elapsed_time(end) / 1000.0  # this was in milliseconds
+        if start_event is not None and end_event is not None:
+            end_event.record()
+            if xm is not None and img1.device.type == "xla":
+                xm.mark_step()
+            elif torch.cuda.is_available():
+                torch.cuda.synchronize()
+            elapsed = start_event.elapsed_time(end_event) / 1000.0
+        else:
+            if xm is not None and img1.device.type == "xla":
+                xm.mark_step()
+            elapsed = time.time() - start_time
 
     if do_change_scale:
         pred = _resize_stereo_or_flow(pred, original_size)
 
     if return_time:
-        return pred, torch.mean(torch.tensor(tiled_losses)), c, time
+        return pred, torch.mean(torch.tensor(tiled_losses)), c, elapsed
     return pred, torch.mean(torch.tensor(tiled_losses)), c
 
 

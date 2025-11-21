@@ -179,7 +179,7 @@ class Attention(nn.Module):
         if self.rope is not None:
             q = q.to(torch.float16)
             k = k.to(torch.float16)
-            with torch.autocast(device_type="cuda", enabled=False):
+            with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
                 q = self.rope(q, xpos)
                 k = self.rope(k, xpos)
             q = q.to(q_type)
@@ -290,13 +290,13 @@ class CrossAttention(nn.Module):
         if self.rope is not None:
             if qpos is not None:
                 q = q.to(torch.float16)
-                with torch.autocast(device_type="cuda", enabled=False):
+                with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
                     q = self.rope(q, qpos)
                 q = q.to(q_type)
 
             if kpos is not None:
                 k = k.to(torch.float16)
-                with torch.autocast(device_type="cuda", enabled=False):
+                with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
                     k = self.rope(k, kpos)
                 k = k.to(k_type)
 

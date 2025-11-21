@@ -114,7 +114,7 @@ class Attention(nn.Module):
         if self.rope is not None:
             q = q.float()
             k = k.float()
-            with torch.autocast(device_type="cuda", enabled=False):
+            with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
                 q = self.rope(q, xpos)
                 k = self.rope(k, xpos)
             q = q.to(q_type)
@@ -220,13 +220,13 @@ class CrossAttention(nn.Module):
         if self.rope is not None:
             if qpos is not None:
                 q = q.float()
-                with torch.autocast(device_type="cuda", enabled=False):
+                with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
                     q = self.rope(q, qpos)
                 q = q.to(q_type)
 
             if kpos is not None:
                 k = k.float()
-                with torch.autocast(device_type="cuda", enabled=False):
+                with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
                     k = self.rope(k, kpos)
                 k = k.to(k_type)
 
@@ -511,6 +511,12 @@ if __name__ == "__main__":
     from torch.utils.checkpoint import checkpoint
 
     torch.manual_seed(0)
+    try:
+        import torch_xla.core.xla_model as xm  # type: ignore
+
+        device = xm.xla_device()
+    except ImportError:
+        device = torch.device("cpu")
 
     enc_blocks_ray_map = (
         nn.ModuleList(
@@ -526,12 +532,19 @@ if __name__ == "__main__":
                 for _ in range(2)
             ]
         )
-        .cuda()
+        .to(device)
         .train()
     )
 
-    x = torch.randn(2, 196, 768, requires_grad=True).cuda()
-    xpos = torch.arange(0, 196).unsqueeze(0).unsqueeze(-1).repeat(2, 1, 2).cuda().long()
+    x = torch.randn(2, 196, 768, requires_grad=True).to(device)
+    xpos = (
+        torch.arange(0, 196)
+        .unsqueeze(0)
+        .unsqueeze(-1)
+        .repeat(2, 1, 2)
+        .to(device)
+        .long()
+    )
     enc_blocks_ray_map.zero_grad()
     for blk in enc_blocks_ray_map:
 

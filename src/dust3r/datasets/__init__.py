@@ -44,7 +44,7 @@ def get_data_loader(
     num_workers=8,
     shuffle=True,
     drop_last=True,
-    pin_mem=True,
+    pin_mem=False,
     accelerator: Accelerator = None,
     fixed_length=False,
 ):

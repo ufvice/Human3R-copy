@@ -248,8 +248,7 @@ class SMPLModel(object):
         for i, v in enumerate(zip(*_target.values())):
             views[i].update(dict(zip(_target.keys(), v)))
 
-        torch.cuda.empty_cache()
-    
+
     def update_smpl_gt_eval(self, views, dataset):
         from dust3r.utils.geometry import geotrf
 
@@ -323,8 +322,6 @@ class SMPLModel(object):
 
         for i, v in enumerate(zip(*_target.values())):
             views[i].update(dict(zip(_target.keys(), v)))
-
-        torch.cuda.empty_cache()
 
 
 def get_patch_uv(imgshape, patch_size, pk_loc):

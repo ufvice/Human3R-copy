@@ -141,6 +141,7 @@ def depth_evaluation(
     use_gpu=False,
     align_with_scale=False,
     disp_input=False,
+    device=None,
 ):
     """
     Evaluate the depth map using various metrics and return a depth error parity map, with an option for least squares alignment.
@@ -171,9 +172,25 @@ def depth_evaluation(
             custom_mask = custom_mask.view(-1, w)
 
     # put to device
-    if use_gpu:
-        predicted_depth_original = predicted_depth_original.cuda()
-        ground_truth_depth_original = ground_truth_depth_original.cuda()
+    if device is None:
+        xla_device = None
+        if use_gpu:
+            try:
+                import torch_xla.core.xla_model as xm  # type: ignore
+
+                xla_device = xm.xla_device()
+            except ImportError:
+                xla_device = None
+        if xla_device is not None:
+            device = xla_device
+        elif use_gpu and torch.cuda.is_available():
+            device = torch.device("cuda")
+        else:
+            device = torch.device("cpu")
+    predicted_depth_original = predicted_depth_original.to(device)
+    ground_truth_depth_original = ground_truth_depth_original.to(device)
+    if custom_mask is not None and torch.is_tensor(custom_mask):
+        custom_mask = custom_mask.to(device)
 
     # Filter out depths greater than max_depth
     if max_depth is not None:

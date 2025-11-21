@@ -197,7 +197,7 @@ dist_url: 'env://'
 rank: 0
 gpu: 0
 distributed: False
-dist_backend: 'nccl'
+dist_backend: 'xla'
 
 eval_freq: 1
 save_freq: 1

@@ -14,6 +14,10 @@ from tqdm import tqdm
 
 import torch
 from torch.utils.data import DataLoader
+try:
+    import torch_xla.core.xla_model as xm  # type: ignore
+except ImportError:  # pragma: no cover - CPU/GPU fallback
+    xm = None
 
 import utils.misc as misc
 from models.croco_downstream import CroCoDownstreamBinocular
@@ -165,9 +169,12 @@ def _save_batch(
 def main(args):
 
     # load the pretrained model and metrics
-    device = (
-        torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
-    )
+    if xm is not None:
+        device = xm.xla_device()
+    else:
+        device = (
+            torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+        )
     model, metrics, cropsize, with_conf, task, tile_conf_mode = (
         _load_model_and_criterion(args.model, "metrics" in args.save, device)
     )
@@ -184,7 +191,7 @@ def main(args):
             batch_size=1,
             shuffle=False,
             num_workers=args.num_workers,
-            pin_memory=True,
+            pin_memory=False,
             drop_last=False,
         )
         for dataset in datasets

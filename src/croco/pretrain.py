@@ -26,6 +26,10 @@ import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
+try:
+    import torch_xla.core.xla_model as xm  # type: ignore
+except ImportError:  # pragma: no cover - CPU/GPU fallback
+    xm = None
 
 import utils.misc as misc
 from utils.misc import NativeScalerWithGradNormCount as NativeScaler
@@ -169,8 +173,10 @@ def main(args):
     print("job dir: {}".format(os.path.dirname(os.path.realpath(__file__))))
     print("{}".format(args).replace(", ", ",\n"))
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    device = torch.device(device)
+    if xm is not None:
+        device = xm.xla_device()
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # fix the seed
     seed = args.seed + misc.get_rank()
@@ -198,7 +204,7 @@ def main(args):
         sampler=sampler_train,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        pin_memory=True,
+        pin_memory=False,
         drop_last=True,
     )
 
@@ -331,7 +337,7 @@ def train_one_epoch(
         print("log_dir: {}".format(log_writer.log_dir))
 
     for data_iter_step, (image1, image2) in enumerate(
-        metric_logger.log_every(data_loader, args.print_freq, header)
+        metric_logger.log_every(data_loader, args.print_freq, header=header)
     ):
 
         # we use a per iteration  lr scheduler
@@ -342,7 +348,9 @@ def train_one_epoch(
 
         image1 = image1.to(device, non_blocking=True)
         image2 = image2.to(device, non_blocking=True)
-        with torch.cuda.amp.autocast(enabled=bool(args.amp)):
+        with torch.autocast(
+            device_type="xla", dtype=torch.bfloat16, enabled=bool(args.amp)
+        ):
             out, mask, target = model(image1, image2)
             loss = criterion(out, mask, target)
 
@@ -362,7 +370,10 @@ def train_one_epoch(
         if (data_iter_step + 1) % accum_iter == 0:
             optimizer.zero_grad()
 
-        torch.cuda.synchronize()
+        if xm is not None and device.type == "xla":
+            xm.mark_step()
+        elif torch.cuda.is_available():
+            torch.cuda.synchronize()
 
         metric_logger.update(loss=loss_value)
 

@@ -221,7 +221,7 @@ class DPTPts3dPose(nn.Module):
         if self.has_pose:
             pose_token = x[-1][:, 0].clone()
             token = x[-1][:, 1:]
-            with torch.cuda.amp.autocast(enabled=False):
+            with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
                 pose = self.pose_head(pose_token)
 
             token_cross = token.clone()
@@ -230,7 +230,7 @@ class DPTPts3dPose(nn.Module):
             x = x[:-1] + [token]
             x_cross = x[:-1] + [token_cross]
 
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
             self_out = checkpoint(
                 self.dpt_self,
                 x,
@@ -408,12 +408,12 @@ class DPTPts3dPoseSMPL(nn.Module):
         self.register_buffer('init_expression', init_expression)
         
     def detect_mhmr(self, x):
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
             scores = postprocess_score(self.mlp_classif(x)) # per token detection score.
         return scores
 
     def segment(self, x):
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
             msks = postprocess_score(self.mlp_msk(x))
         return msks
     
@@ -423,7 +423,7 @@ class DPTPts3dPoseSMPL(nn.Module):
             n_humans_i = kwargs.get("n_humans")
             token = x[-1][:, 1:]
 
-            with torch.cuda.amp.autocast(enabled=False):
+            with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
                 pose = self.pose_head(pose_token)
                 if n_humans_i > 0:
                     smpl_token = kwargs.get("smpl_token")   # CUT3R smpl token (bs, 10, 768)
@@ -439,7 +439,7 @@ class DPTPts3dPoseSMPL(nn.Module):
             x = x[:-1] + [token]
             x_cross = x[:-1] + [token_cross]
 
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
             self_out = checkpoint(
                 self.dpt_self,
                 x,
@@ -605,7 +605,7 @@ class NaiveDPTPts3dPoseSMPL(nn.Module):
         self.register_buffer('init_expression', init_expression)
         
     def detect_mhmr(self, x):
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
             scores = postprocess_score(self.mlp_classif(x)) # per token detection score.
         return scores
       
@@ -615,7 +615,7 @@ class NaiveDPTPts3dPoseSMPL(nn.Module):
             n_humans_i = kwargs.get("n_humans")
             token = x[-1][:, 1:]
 
-            with torch.cuda.amp.autocast(enabled=False):
+            with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
                 pose = self.pose_head(pose_token)
                 if n_humans_i > 0:
                     smpl_token = kwargs.get("smpl_token") 
@@ -629,7 +629,7 @@ class NaiveDPTPts3dPoseSMPL(nn.Module):
             x = x[:-1] + [token]
             x_cross = x[:-1] + [token_cross]
 
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
             self_out = checkpoint(
                 self.dpt_self,
                 x,

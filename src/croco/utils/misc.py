@@ -19,12 +19,19 @@ import json
 from collections import defaultdict, deque
 from pathlib import Path
 import numpy as np
+from typing import Optional
 
 import torch
 import torch.distributed as dist
 from torch import inf
 from accelerate import Accelerator
 from accelerate.logging import get_logger
+
+try:
+    import torch_xla.core.xla_model as xm
+    import torch_xla.distributed.xla_backend  # noqa: F401
+except ImportError:  # pragma: no cover - CPU/GPU environments
+    xm = None
 
 printer = get_logger(__name__, log_level="DEBUG")
 
@@ -129,7 +136,12 @@ class MetricLogger(object):
         self.meters[name] = meter
 
     def log_every(
-        self, iterable, print_freq, accelerator: Accelerator, header=None, max_iter=None
+        self,
+        iterable,
+        print_freq,
+        accelerator: Optional[Accelerator] = None,
+        header=None,
+        max_iter=None,
     ):
         i = 0
         if not header:
@@ -148,10 +160,7 @@ class MetricLogger(object):
             "time: {time}",
             "data: {data}",
         ]
-        if torch.cuda.is_available():
-            log_msg.append("max mem: {memory:.0f}")
         log_msg = self.delimiter.join(log_msg)
-        MB = 1024.0 * 1024.0
         for it, obj in enumerate(iterable):
             data_time.update(time.time() - end)
             yield obj
@@ -159,38 +168,24 @@ class MetricLogger(object):
             if i % print_freq == 0 or i == len_iterable - 1:
                 eta_seconds = iter_time.global_avg * (len_iterable - i)
                 eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
-                if torch.cuda.is_available():
-                    if accelerator.is_main_process:
-                        printer.info(
-                            log_msg.format(
-                                i,
-                                len_iterable,
-                                eta=eta_string,
-                                meters=str(self),
-                                time=str(iter_time),
-                                data=str(data_time),
-                                memory=torch.cuda.max_memory_allocated() / MB,
-                            )
+                if accelerator is None or accelerator.is_main_process:
+                    printer.info(
+                        log_msg.format(
+                            i,
+                            len_iterable,
+                            eta=eta_string,
+                            meters=str(self),
+                            time=str(iter_time),
+                            data=str(data_time),
                         )
-                else:
-                    if accelerator.is_main_process:
-                        printer.info(
-                            log_msg.format(
-                                i,
-                                len_iterable,
-                                eta=eta_string,
-                                meters=str(self),
-                                time=str(iter_time),
-                                data=str(data_time),
-                            )
-                        )
+                    )
             i += 1
             end = time.time()
             if max_iter and it >= max_iter:
                 break
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
-        if accelerator.is_main_process:
+        if accelerator is None or accelerator.is_main_process:
             printer.info(
                 "{} Total time: {} ({:.4f} s / it)".format(
                     header, total_time_str, total_time / len_iterable
@@ -249,7 +244,7 @@ def init_distributed_mode(args):
     if "RANK" in os.environ and "WORLD_SIZE" in os.environ and not nodist:
         args.rank = int(os.environ["RANK"])
         args.world_size = int(os.environ["WORLD_SIZE"])
-        args.gpu = int(os.environ["LOCAL_RANK"])
+        args.gpu = int(os.environ.get("LOCAL_RANK", 0))
     else:
         print("Not using distributed mode")
         setup_for_distributed(is_master=True)  # hack
@@ -258,8 +253,7 @@ def init_distributed_mode(args):
 
     args.distributed = True
 
-    torch.cuda.set_device(args.gpu)
-    args.dist_backend = "nccl"
+    args.dist_backend = "xla" if xm is not None else "gloo"
     print(
         "| distributed init (rank {}): {}, gpu {}".format(
             args.rank, args.dist_url, args.gpu
@@ -291,31 +285,52 @@ class NativeScalerWithGradNormCount:
         create_graph=False,
         update_grad=True,
     ):
-        self.accelerator.backward(
-            loss, create_graph=create_graph
-        )  # .backward(create_graph=create_graph)
-        if update_grad:
-            if clip_grad is not None:
-                assert parameters is not None
-                # self._scaler.unscale_(optimizer)  # unscale the gradients of optimizer's assigned params in-place
-                norm = self.accelerator.clip_grad_norm_(parameters, clip_grad)
+        if self.accelerator is not None:
+            self.accelerator.backward(loss, create_graph=create_graph)
+            if update_grad:
+                param_list = parameters if parameters is not None else []
+                if clip_grad is not None:
+                    assert parameters is not None
+                    norm = self.accelerator.clip_grad_norm_(parameters, clip_grad)
+                else:
+                    if self.accelerator.scaler is not None:
+                        self.accelerator.unscale_gradients()
+                    norm = get_grad_norm_(param_list)
+                if (
+                    xm is not None
+                    and hasattr(self.accelerator, "device")
+                    and getattr(self.accelerator.device, "type", None) == "xla"
+                ):
+                    xm.optimizer_step(optimizer, barrier=True)
+                else:
+                    optimizer.step()
             else:
-                if self.accelerator.scaler is not None:
-                    self.accelerator.unscale_gradients()
-                norm = get_grad_norm_(parameters)
-            optimizer.step()
+                norm = None
         else:
-            norm = None
+            loss.backward(create_graph=create_graph)
+            if update_grad:
+                param_list = parameters if parameters is not None else []
+                if clip_grad is not None:
+                    assert parameters is not None
+                    norm = torch.nn.utils.clip_grad_norm_(parameters, clip_grad)
+                else:
+                    norm = get_grad_norm_(param_list)
+                if xm is not None and parameters is not None:
+                    xm.optimizer_step(optimizer, barrier=True)
+                else:
+                    optimizer.step()
+            else:
+                norm = None
         return norm
 
     def state_dict(self):
-        if self.accelerator.scaler is not None:
+        if self.accelerator is not None and self.accelerator.scaler is not None:
             return self.accelerator.scaler.state_dict()
         else:
             return {}
 
     def load_state_dict(self, state_dict):
-        if self.accelerator.scaler is not None:
+        if self.accelerator is not None and self.accelerator.scaler is not None:
             self.accelerator.scaler.load_state_dict(state_dict)
 
 
@@ -439,10 +454,10 @@ def load_model(args, model_without_ddp, optimizer, loss_scaler):
     return best_so_far
 
 
-def all_reduce_mean(x, accelerator):
+def all_reduce_mean(x, accelerator=None):
     """Use accelerator to all-reduce and compute mean."""
-    if accelerator.state.num_processes > 1:
-        x_reduce = torch.tensor(x).cuda()
+    if accelerator is not None and accelerator.state.num_processes > 1:
+        x_reduce = torch.tensor(x, device=accelerator.device)
         accelerator.reduce(x_reduce, reduce_op="SUM")
         x_reduce /= accelerator.state.num_processes
         return x_reduce.item()

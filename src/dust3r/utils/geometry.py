@@ -7,6 +7,10 @@
 import torch
 import numpy as np
 from scipy.spatial import cKDTree as KDTree
+try:
+    import torch_xla.core.xla_model as xm  # type: ignore
+except ImportError:  # pragma: no cover - CPU/GPU fallback
+    xm = None
 
 from dust3r.utils.misc import invalid_to_zeros, invalid_to_nans
 from dust3r.utils.device import to_numpy
@@ -633,8 +637,10 @@ def undo_log_depth(y, eps=EPS_LOG):
     """
     return torch.exp(y) - eps
 
-def get_camera_parameters(img_size, fov=60, p_x=None, p_y=None, device=torch.device('cuda')):
+def get_camera_parameters(img_size, fov=60, p_x=None, p_y=None, device=None):
     """ Given image size, fov and principal point coordinates, return K the camera parameter matrix"""
+    if device is None:
+        device = xm.xla_device() if xm is not None else torch.device("cpu")
     K = torch.eye(3)
     # Get focal length.
     focal = get_focalLength_from_fieldOfView(fov=fov, img_size=img_size)

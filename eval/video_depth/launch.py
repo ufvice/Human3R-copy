@@ -27,7 +27,7 @@ def get_args_parser():
         default="",
     )
 
-    parser.add_argument("--device", type=str, default="cuda", help="pytorch device")
+    parser.add_argument("--device", type=str, default="xla", help="pytorch device")
     parser.add_argument(
         "--output_dir",
         type=str,
@@ -163,7 +163,6 @@ def eval_pose_estimation_dist(args, model, img_path, save_dir=None, mask_path=No
             except Exception as e:
                 if "out of memory" in str(e):
                     # Handle OOM
-                    torch.cuda.empty_cache()  # Clear the CUDA memory
                     with open(error_log_path, "a") as f:
                         f.write(
                             f"OOM error in sequence {seq}, skipping this sequence.\n"

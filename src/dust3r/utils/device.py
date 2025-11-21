@@ -4,8 +4,13 @@
 # --------------------------------------------------------
 # modified from DUSt3R
 
+import warnings
 import numpy as np
 import torch
+try:
+    import torch_xla.core.xla_model as xm  # type: ignore
+except ImportError:  # pragma: no cover - CPU/GPU fallback
+    xm = None
 
 
 def todevice(batch, device, callback=None, non_blocking=False):
@@ -48,7 +53,17 @@ def to_cpu(x):
 
 
 def to_cuda(x):
-    return todevice(x, "cuda")
+    warnings.warn(
+        "to_cuda is deprecated; forwarding to to_xla() when available.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return to_xla(x)
+
+
+def to_xla(x):
+    device = xm.xla_device() if xm is not None else "cpu"
+    return todevice(x, device)
 
 
 def collate_with_cat(whatever, lists=False):

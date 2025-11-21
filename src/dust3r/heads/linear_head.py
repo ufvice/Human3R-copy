@@ -301,13 +301,13 @@ class LinearPts3dPose(nn.Module):
         if self.has_pose:
             pose_token = tokens[:, 0]
             tokens = tokens[:, 1:]
-            with torch.cuda.amp.autocast(enabled=False):
+            with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
                 pose = self.pose_head(pose_token)
             cross_tokens = tokens
             for blk in self.final_transform:
                 cross_tokens = blk(cross_tokens, pose_token, kwargs.get("pos"))
 
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
             B, S, D = tokens.shape
 
             feat = self.proj(tokens)  # B,S,D

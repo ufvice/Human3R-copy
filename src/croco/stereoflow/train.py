@@ -20,6 +20,10 @@ from torch.utils.tensorboard import SummaryWriter
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 from torch.utils.data import DataLoader
+try:
+    import torch_xla.core.xla_model as xm  # type: ignore
+except ImportError:  # pragma: no cover - CPU/GPU fallback
+    xm = None
 
 import utils
 import utils.misc as misc
@@ -211,7 +215,10 @@ def main(args):
     cudnn.benchmark = True
 
     # Metrics / criterion
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    if xm is not None:
+        device = xm.xla_device()
+    else:
+        device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     metrics = (StereoMetrics if args.task == "stereo" else FlowMetrics)().to(device)
     criterion = eval(args.criterion).to(device)
     print("Criterion: ", args.criterion)
@@ -316,7 +323,7 @@ def main(args):
         sampler=sampler_train,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        pin_memory=True,
+        pin_memory=False,
         drop_last=True,
     )
     if args.val_dataset == "":
@@ -336,7 +343,7 @@ def main(args):
                 batch_size=1,
                 shuffle=False,
                 num_workers=args.num_workers,
-                pin_memory=True,
+                pin_memory=False,
                 drop_last=False,
             )
             for val_dataset in val_datasets

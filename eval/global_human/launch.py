@@ -28,7 +28,7 @@ def get_args_parser():
         help="path to the model weights",
         default="",
     )
-    parser.add_argument("--device", type=str, default="cuda", help="pytorch device")
+    parser.add_argument("--device", type=str, default="xla", help="pytorch device")
     parser.add_argument(
         "--output_dir",
         type=str,
@@ -134,7 +134,6 @@ def run_inference(
 
     del outputs, views
     gc.collect()
-    torch.cuda.empty_cache()
 
     return gt, pred
 
@@ -310,7 +309,6 @@ def eval_smpl_error(args, model, smpl_model, smpl_layer, save_dir=None):
                     for k, v in global_metrics.items():
                         metrics[k].append(v)
                         
-                torch.cuda.empty_cache()
 
                 # Write to error log after each sequence
                 os.makedirs(save_dir, exist_ok=True)
@@ -326,7 +324,6 @@ def eval_smpl_error(args, model, smpl_model, smpl_layer, save_dir=None):
             except Exception as e:
                 print(f"Exception in sequence {seq}: {str(e)}")
                 if "out of memory" in str(e):
-                    torch.cuda.empty_cache()
                     with open(error_log_path, "a") as f:
                         f.write(
                             f"OOM error in sequence {seq}, skipping this sequence.\n"
@@ -342,8 +339,6 @@ def eval_smpl_error(args, model, smpl_model, smpl_layer, save_dir=None):
                     raise e
 
     distributed_state.wait_for_everyone()
-    torch.cuda.empty_cache()
-
     results = process_directory(save_dir)
     summary = calculate_averages(results)
 

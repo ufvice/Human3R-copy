@@ -54,8 +54,8 @@ def parse_args():
     parser.add_argument(
         "--device",
         type=str,
-        default="cuda",
-        help="Device to run inference on (e.g., 'cuda' or 'cpu').",
+        default="xla",
+        help="Device to run inference on (e.g., 'xla', 'cuda', or 'cpu').",
     )
     parser.add_argument(
         "--size",
@@ -564,9 +564,23 @@ def run_inference(args):
     """
     # Set up the computation device.
     device = args.device
-    if device == "cuda" and not torch.cuda.is_available():
-        print("CUDA not available. Switching to CPU.")
-        device = "cpu"
+    if isinstance(device, str):
+        if device == "xla":
+            try:
+                import torch_xla.core.xla_model as xm  # type: ignore
+
+                device = xm.xla_device()
+            except ImportError:
+                print("XLA not available. Switching to CPU.")
+                device = torch.device("cpu")
+        elif device.startswith("cuda"):
+            if not torch.cuda.is_available():
+                print("CUDA not available. Switching to CPU.")
+                device = torch.device("cpu")
+            else:
+                device = torch.device(device)
+        else:
+            device = torch.device(device)
 
     # Add the checkpoint path (required for model imports in the dust3r package).
     add_path_to_dust3r(args.model_path)

@@ -50,7 +50,7 @@ from dust3r.utils.image import unpad_uv, log_optimal_transport
 from mhmr.blocks import Dinov2Backbone, FourierPositionEncoding, TransformerDecoder
 printer = get_logger(__name__, log_level="DEBUG")
 
-from dust3r.utils.device import to_cpu, to_gpu
+from dust3r.utils.device import to_cpu, to_gpu, xm
 
 @dataclass
 class ARCroco3DStereoOutput(ModelOutput):
@@ -1696,6 +1696,10 @@ class ARCroco3DStereo(CroCoNet):
                 )
                 mem = init_mem * reset_mask + mem * (1 - reset_mask)
            
+            # Force XLA to execute periodically to avoid gigantic lazy graphs
+            if xm is not None and (i + 1) % 5 == 0:
+                xm.mark_step()
+           
         if ret_state:
             return ress, views, all_state_args
         return ress, views
@@ -1953,6 +1957,10 @@ class ARCroco3DStereo(CroCoNet):
                     1 - reset_mask
                 )
                 mem = init_mem * reset_mask + mem * (1 - reset_mask)
+            
+            # Force XLA to execute periodically to avoid gigantic lazy graphs
+            if xm is not None and (i + 1) % 5 == 0:
+                xm.mark_step()
         if ret_state:
             return ress, views, all_state_args
         return ress, views

@@ -1589,6 +1589,23 @@ class ARCroco3DStereo(CroCoNet):
                 ress, views = self._forward_impl(views, ret_state=ret_state)
                 return ARCroco3DStereoOutput(ress=ress, views=views)
 
+    def compiled_for_xla(self, backend: str = "openxla", mode: str = "default"):
+        """
+        Return an XLA-compiled version of this model when torch.compile is available.
+
+        This is a convenience wrapper around torch.compile(self, backend=backend).
+        If compilation fails or torch.compile is unavailable, the original
+        module is returned unchanged.
+        """
+        if not hasattr(torch, "compile"):
+            printer.warning("torch.compile is not available in this PyTorch version.")
+            return self
+        try:
+            return torch.compile(self, backend=backend, mode=mode)
+        except Exception as exc:
+            printer.warning(f"torch.compile with backend={backend} failed: {exc}")
+            return self
+
     def forward_recurrent_lighter(
         self, views, device, ret_state=False, use_ttt3r=False
     ):
@@ -1794,7 +1811,6 @@ class ARCroco3DStereo(CroCoNet):
             )
 
             # tracking
-            num_miss_match0 = 0
             if last_smpl_tk is not None and smpl_token is not None:
                 cost_mat = -torch.cdist(last_smpl_tk, smpl_token, p=2)
                 cost_mat = log_optimal_transport(
@@ -1831,33 +1847,29 @@ class ARCroco3DStereo(CroCoNet):
                         1, valid_match1[None]
                     ).flatten()
 
-                num_miss_match0 = int((~valid0).sum())
-                num_new_persons = len(smpl_id[~valid1])
-                if num_new_persons > 0:
-                    new_ids = torch.arange(
-                        max_smpl_id + 1,
-                        max_smpl_id + 1 + num_new_persons,
-                        device=device,
-                    )
-                    smpl_id[~valid1] = new_ids
-                    max_smpl_id += num_new_persons
-            else:
-                # first frame with humans
-                if smpl_token is not None:
-                    smpl_id = torch.arange(n_humans_i, device=device)[None]  # (1, nvh)
-                    max_smpl_id = n_humans_i - 1
-                else:
-                    smpl_id = None
+                # allocate new ids for unmatched current persons without syncing to host
+                max_humans = smpl_id.shape[1]
+                base_new_id = max_smpl_id + 1
+                frame_new_ids = torch.arange(
+                    base_new_id, base_new_id + max_humans, device=device
+                )[None]
+                smpl_id = torch.where(~valid1, frame_new_ids, smpl_id)
+                max_smpl_id = max_smpl_id + max_humans
 
-            if smpl_token is not None:
-                if num_miss_match0 > 0:
-                    miss_match_id0 = last_smpl_id[~valid0][None]
-                    miss_match_tk0 = last_smpl_tk[~valid0][None]
-                    last_smpl_id = torch.cat([smpl_id, miss_match_id0], dim=1)
-                    last_smpl_tk = torch.cat([smpl_token, miss_match_tk0], dim=1)
-                else:
-                    last_smpl_tk = smpl_token.clone()
-                    last_smpl_id = smpl_id.clone()
+                # append unmatched previous persons to the end of the track list
+                miss_match_mask0 = ~valid0
+                miss_match_id0 = last_smpl_id[miss_match_mask0][None]
+                miss_match_tk0 = last_smpl_tk[miss_match_mask0][None]
+                last_smpl_id = torch.cat([smpl_id, miss_match_id0], dim=1)
+                last_smpl_tk = torch.cat([smpl_token, miss_match_tk0], dim=1)
+            elif smpl_token is not None:
+                # first frame with humans (or first frame after reset)
+                smpl_id = torch.arange(n_humans_i, device=device)[None]  # (1, nvh)
+                last_smpl_tk = smpl_token.clone()
+                last_smpl_id = smpl_id.clone()
+                max_smpl_id = n_humans_i - 1
+            else:
+                smpl_id = None
 
             if smpl_id is not None:
                 res["smpl_id"] = smpl_id
@@ -1903,8 +1915,8 @@ class ARCroco3DStereo(CroCoNet):
                 mem = init_mem * reset_mask + mem * (1 - reset_mask)
 
             # Force XLA to execute periodically to avoid gigantic lazy graphs
-            # if xm is not None and (i + 1) % 5 == 0:
-            xm.mark_step()
+            if xm is not None and device.type == "xla" and (i + 1) % 5 == 0:
+                xm.mark_step()
 
         if ret_state:
             return ress, views, all_state_args
@@ -2105,7 +2117,6 @@ class ARCroco3DStereo(CroCoNet):
             )
 
             # tracking
-            num_miss_match0 = 0
             if last_smpl_tk is not None and smpl_token is not None:
                 cost_mat = -torch.cdist(last_smpl_tk, smpl_token, p=2)
                 cost_mat = log_optimal_transport(
@@ -2142,33 +2153,29 @@ class ARCroco3DStereo(CroCoNet):
                         1, valid_match1[None]
                     ).flatten()
 
-                num_miss_match0 = int((~valid0).sum())
-                num_new_persons = len(smpl_id[~valid1])
-                if num_new_persons > 0:
-                    new_ids = torch.arange(
-                        max_smpl_id + 1,
-                        max_smpl_id + 1 + num_new_persons,
-                        device=device,
-                    )
-                    smpl_id[~valid1] = new_ids
-                    max_smpl_id += num_new_persons
-            else:
-                # first frame with humans
-                if smpl_token is not None:
-                    smpl_id = torch.arange(n_humans_i, device=device)[None]  # (1, nvh)
-                    max_smpl_id = n_humans_i - 1
-                else:
-                    smpl_id = None
+                # allocate new ids for unmatched current persons without syncing to host
+                max_humans = smpl_id.shape[1]
+                base_new_id = max_smpl_id + 1
+                frame_new_ids = torch.arange(
+                    base_new_id, base_new_id + max_humans, device=device
+                )[None]
+                smpl_id = torch.where(~valid1, frame_new_ids, smpl_id)
+                max_smpl_id = max_smpl_id + max_humans
 
-            if smpl_token is not None:
-                if num_miss_match0 > 0:
-                    miss_match_id0 = last_smpl_id[~valid0][None]
-                    miss_match_tk0 = last_smpl_tk[~valid0][None]
-                    last_smpl_id = torch.cat([smpl_id, miss_match_id0], dim=1)
-                    last_smpl_tk = torch.cat([smpl_token, miss_match_tk0], dim=1)
-                else:
-                    last_smpl_tk = smpl_token.clone()
-                    last_smpl_id = smpl_id.clone()
+                # append unmatched previous persons to the end of the track list
+                miss_match_mask0 = ~valid0
+                miss_match_id0 = last_smpl_id[miss_match_mask0][None]
+                miss_match_tk0 = last_smpl_tk[miss_match_mask0][None]
+                last_smpl_id = torch.cat([smpl_id, miss_match_id0], dim=1)
+                last_smpl_tk = torch.cat([smpl_token, miss_match_tk0], dim=1)
+            elif smpl_token is not None:
+                # first frame with humans (or first frame after reset)
+                smpl_id = torch.arange(n_humans_i, device=device)[None]  # (1, nvh)
+                last_smpl_tk = smpl_token.clone()
+                last_smpl_id = smpl_id.clone()
+                max_smpl_id = n_humans_i - 1
+            else:
+                smpl_id = None
 
             if smpl_id is not None:
                 res["smpl_id"] = smpl_id
@@ -2211,8 +2218,8 @@ class ARCroco3DStereo(CroCoNet):
                 mem = init_mem * reset_mask + mem * (1 - reset_mask)
 
             # Force XLA to execute periodically to avoid gigantic lazy graphs
-            # if xm is not None and (i + 1) % 5 == 0:
-            xm.mark_step()
+            if xm is not None and device.type == "xla" and (i + 1) % 5 == 0:
+                xm.mark_step()
         if ret_state:
             return ress, views, all_state_args
         return ress, views

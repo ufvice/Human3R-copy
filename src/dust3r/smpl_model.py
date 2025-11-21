@@ -71,7 +71,7 @@ class SMPLModel(object):
             self.params_type = 'smpl'
 
     def forward_smpl(self, dataset, smpl_dict, smpl_mask):
-        nhv = int(smpl_mask.sum())
+        nhv = int(smpl_mask.sum().item())
 
         if dataset in ['bedlam']:
             out = self.smplx_neutral_11(
@@ -153,7 +153,7 @@ class SMPLModel(object):
             [view['camera_intrinsics'] for view in views], dim=0
         )
         K = K.view(-1, *K.shape[2:])
-        nhv = int(smpl_mask.sum())
+        nhv = int(smpl_mask.sum().item())
 
         # Get MHMR input image (high-res, square)
         imgs = torch.stack([view["img"] for view in views], dim=0)
@@ -332,35 +332,68 @@ def get_patch_uv(imgshape, patch_size, pk_loc):
 def get_score(n_patch, pk_idx, smpl_mask):
     # Scores & updating valid_humans according to occlusion - wap X and Y for scores only
     idx_h = torch.where(smpl_mask)
-    nhv = int(smpl_mask.sum())
+    img_idx, human_idx = idx_h[0], idx_h[1]
+    nhv = img_idx.numel()
     bs = smpl_mask.shape[0]
     device = smpl_mask.device
 
     if isinstance(n_patch, (int, float)):
         patch_h, patch_w = int(n_patch), int(n_patch)
     else:
-        patch_h, patch_w = n_patch[0], n_patch[1]
+        patch_h, patch_w = int(n_patch[0]), int(n_patch[1])
 
-    scores = torch.zeros((bs, patch_h, patch_w)).to(device)
-    visible_humans = torch.ones(nhv).to(device) # by default no occlusion so all visible
+    # initialize outputs
+    scores = torch.zeros((bs, patch_h, patch_w), device=device)
+    if nhv == 0:
+        visible_humans = torch.zeros(0, device=device)
+        return smpl_mask, visible_humans, scores
 
-    for k in range(nhv):
-        i = int(idx_h[0][k]) # index of the image
-        j = int(idx_h[1][k]) # index of the human in this image
-        _x = pk_idx[k,1] # patch center H
-        _y = pk_idx[k,0] # patch center W
-        # filter out heads out of cropping bounds
-        if _x >= 0 and _x < patch_h and _y >= 0 and _y < patch_w:
-            if scores[i,_x,_y] == 1:
-                smpl_mask[i,j] = 0
-                visible_humans[k] = 0
-            else:
-                scores[i,_x,_y] = 1
-        else:
-            smpl_mask[i,j] = 0
-            visible_humans[k] = 0
-    
-    return smpl_mask, visible_humans, scores
+    # integer patch coordinates for each human
+    x = pk_idx[:, 1].long()
+    y = pk_idx[:, 0].long()
+
+    in_x = (x >= 0) & (x < patch_h)
+    in_y = (y >= 0) & (y < patch_w)
+    in_range = in_x & in_y
+
+    patch_area = patch_h * patch_w
+    flat_patch = x * patch_w + y
+
+    # keep only humans with valid patch coordinates when resolving collisions
+    valid = in_range
+    human_indices = torch.arange(nhv, device=device)
+
+    if valid.any():
+        key_valid = img_idx[valid] * patch_area + flat_patch[valid]
+        human_valid = human_indices[valid]
+
+        # sort by key to find first occupant of each (img, patch)
+        sorted_key, sort_idx = torch.sort(key_valid)
+        sorted_human = human_valid[sort_idx]
+
+        is_first = torch.ones_like(sorted_key, dtype=torch.bool)
+        is_first[1:] = sorted_key[1:] != sorted_key[:-1]
+        primary_humans = sorted_human[is_first]
+
+        primary_mask = torch.zeros(nhv, dtype=torch.bool, device=device)
+        primary_mask[primary_humans] = True
+    else:
+        primary_mask = torch.zeros(nhv, dtype=torch.bool, device=device)
+
+    primary = in_range & primary_mask
+
+    # visible humans: only primary and in-range
+    visible_humans = primary.to(scores.dtype)
+
+    # update scores for visible humans
+    scores[img_idx[primary], x[primary], y[primary]] = 1.0
+
+    # update smpl_mask: keep only visible humans
+    smpl_mask_out = smpl_mask.clone()
+    to_clear = ~primary
+    smpl_mask_out[img_idx[to_clear], human_idx[to_clear]] = False
+
+    return smpl_mask_out, visible_humans, scores
 
 
 import torch.nn as nn

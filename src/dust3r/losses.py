@@ -422,7 +422,7 @@ class SMPLLoss(Criterion, MultiLoss):
         img_mask = stack_view(img_mask_list,'img_mask').unsqueeze(1)
         smpl_mask = stack_view(smpl_mask_list, 'smpl_mask') * img_mask
         idx_h = torch.where(smpl_mask)
-        if int(smpl_mask.sum()) == 0:
+        if smpl_mask.sum().item() == 0:
             total_loss = self.alpha_bce * score_loss
             details = {
                 **score_details,
@@ -559,7 +559,7 @@ class NaiveSMPLLoss(SMPLLoss):
         img_mask = stack_view(img_mask_list,'img_mask').unsqueeze(1)
         smpl_mask = stack_view(smpl_mask_list, 'smpl_mask') * img_mask
         idx_h = torch.where(smpl_mask)
-        if int(smpl_mask.sum()) == 0:
+        if smpl_mask.sum().item() == 0:
             total_loss = self.alpha_bce * score_loss
             details = {
                 **score_details,

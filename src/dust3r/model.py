@@ -1697,8 +1697,8 @@ class ARCroco3DStereo(CroCoNet):
                 mem = init_mem * reset_mask + mem * (1 - reset_mask)
            
             # Force XLA to execute periodically to avoid gigantic lazy graphs
-            if xm is not None and (i + 1) % 5 == 0:
-                xm.mark_step()
+            # if xm is not None and (i + 1) % 5 == 0:
+            xm.mark_step()
            
         if ret_state:
             return ress, views, all_state_args
@@ -1959,8 +1959,8 @@ class ARCroco3DStereo(CroCoNet):
                 mem = init_mem * reset_mask + mem * (1 - reset_mask)
             
             # Force XLA to execute periodically to avoid gigantic lazy graphs
-            if xm is not None and (i + 1) % 5 == 0:
-                xm.mark_step()
+            # if xm is not None and (i + 1) % 5 == 0:
+            xm.mark_step()
         if ret_state:
             return ress, views, all_state_args
         return ress, views

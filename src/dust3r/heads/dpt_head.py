@@ -114,7 +114,7 @@ class PixelwiseTaskWithDPT(nn.Module):
         self.dpt.init(**dpt_init_args)
 
     def forward(self, x, img_info):
-        out = self.dpt(x, image_size=(img_info[0], img_info[1]))
+        out = self.dpt(x, (img_info[0], img_info[1]))
         if self.postprocess:
             out = self.postprocess(out, self.depth_mode, self.conf_mode)
         return out
@@ -236,7 +236,7 @@ class DPTPts3dPose(nn.Module):
             self_out = checkpoint(
                 self.dpt_self,
                 x,
-                image_size=(img_info[0], img_info[1]),
+                (img_info[0], img_info[1]),
                 use_reentrant=True,
             )
 
@@ -248,7 +248,7 @@ class DPTPts3dPose(nn.Module):
                 rgb_out = checkpoint(
                     self.dpt_rgb,
                     x,
-                    image_size=(img_info[0], img_info[1]),
+                    (img_info[0], img_info[1]),
                     use_reentrant=True,
                 )
                 rgb_output = postprocess_rgb(rgb_out)
@@ -260,7 +260,7 @@ class DPTPts3dPose(nn.Module):
                 cross_out = checkpoint(
                     self.dpt_cross,
                     x_cross,
-                    image_size=(img_info[0], img_info[1]),
+                    (img_info[0], img_info[1]),
                     use_reentrant=True,
                 )
                 tmp = postprocess(cross_out, self.depth_mode, self.conf_mode)
@@ -477,7 +477,7 @@ class DPTPts3dPoseSMPL(nn.Module):
             self_out = checkpoint(
                 self.dpt_self,
                 x,
-                image_size=(img_info[0], img_info[1]),
+                (img_info[0], img_info[1]),
                 # ret_feat=True,
                 use_reentrant=True,
             )
@@ -490,7 +490,7 @@ class DPTPts3dPoseSMPL(nn.Module):
                 rgb_out = checkpoint(
                     self.dpt_rgb,
                     x,
-                    image_size=(img_info[0], img_info[1]),
+                    (img_info[0], img_info[1]),
                     use_reentrant=True,
                 )
                 rgb_output = postprocess_rgb(rgb_out)
@@ -502,7 +502,7 @@ class DPTPts3dPoseSMPL(nn.Module):
                 cross_out = checkpoint(
                     self.dpt_cross,
                     x_cross,
-                    image_size=(img_info[0], img_info[1]),
+                    (img_info[0], img_info[1]),
                     use_reentrant=True,
                 )
                 tmp = postprocess(cross_out, self.depth_mode, self.conf_mode)
@@ -698,7 +698,7 @@ class NaiveDPTPts3dPoseSMPL(nn.Module):
             self_out = checkpoint(
                 self.dpt_self,
                 x,
-                image_size=(img_info[0], img_info[1]),
+                (img_info[0], img_info[1]),
                 use_reentrant=True,
             )
 
@@ -710,7 +710,7 @@ class NaiveDPTPts3dPoseSMPL(nn.Module):
                 rgb_out = checkpoint(
                     self.dpt_rgb,
                     x,
-                    image_size=(img_info[0], img_info[1]),
+                    (img_info[0], img_info[1]),
                     use_reentrant=True,
                 )
                 rgb_output = postprocess_rgb(rgb_out)
@@ -722,7 +722,7 @@ class NaiveDPTPts3dPoseSMPL(nn.Module):
                 cross_out = checkpoint(
                     self.dpt_cross,
                     x_cross,
-                    image_size=(img_info[0], img_info[1]),
+                    (img_info[0], img_info[1]),
                     use_reentrant=True,
                 )
                 tmp = postprocess(cross_out, self.depth_mode, self.conf_mode)

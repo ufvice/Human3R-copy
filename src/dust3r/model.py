@@ -1119,7 +1119,7 @@ class ARCroco3DStereo(CroCoNet):
             )
             loc = torch.cat([l.squeeze(0) for l in loc], dim=0) # (nvh, 2)
             loc_cut3r = unpad_uv(loc, self.mhmr_img_res, *views[0]["true_shape"][0])
-            smpl_uv = (loc_cut3r // self.croco_args['patch_size']).int()
+            smpl_uv = (loc_cut3r // self.croco_args['patch_size']).long()
             w_id, h_id = smpl_uv.T
         else:
             smpl_mask = torch.stack([view["smpl_mask"] for view in views], dim=0)
@@ -1128,7 +1128,7 @@ class ARCroco3DStereo(CroCoNet):
             loc = torch.stack([l.detach() for l in loc], dim=0) # high-res head uv in mhmr: (num_view, bs, 10, 2)
             loc = loc.view(-1, *loc.shape[2:]) #(num_view * bs, 10, 2)
             loc_cut3r = unpad_uv(loc[smpl_mask], self.mhmr_img_res, *views[0]["true_shape"][0]) # high-res head uv in cut3r
-            smpl_uv = (loc_cut3r // self.croco_args['patch_size']).int() # low-res head uv in cut3r
+            smpl_uv = (loc_cut3r // self.croco_args['patch_size']).long()# low-res head uv in cut3r
             img_id = torch.where(smpl_mask)[0]
             w_id, h_id = smpl_uv.T
 
@@ -1522,7 +1522,7 @@ class ARCroco3DStereo(CroCoNet):
                 pos_i, "b (nh nw) c -> b nh nw c", nh=n_patch_cut3r[0], nw=n_patch_cut3r[1]) # (num_view * bs, h, w, 2)
             
             loc_cut3r = unpad_uv(loc, self.mhmr_img_res, *shape[0])
-            smpl_uv_cut3r = (loc_cut3r // self.croco_args['patch_size']).int()
+            smpl_uv_cut3r = (loc_cut3r // self.croco_args['patch_size']).long()
             w_id_cut3r, h_id_cut3r = smpl_uv_cut3r.T
             feat_central_cut3r = feat_cut3r_i[img_id, h_id_cut3r, w_id_cut3r] # (nvh, 1024)
             pos_central_cut3r = pos_cut3r_i[img_id, h_id_cut3r, w_id_cut3r] # (nvh, 2)

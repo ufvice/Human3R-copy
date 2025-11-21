@@ -168,14 +168,15 @@ def inference_recurrent_lighter(groups, model, device, verbose=True, is_naive=Fa
     with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
         if is_naive:
             preds, batch, state_args = model.forward_recurrent_lighter_naive(
-            groups, device, ret_state=True, use_ttt3r=use_ttt3r
-        )
+                groups, device, ret_state=True, use_ttt3r=use_ttt3r
+            )
         else:
             preds, batch, state_args = model.forward_recurrent_lighter(
                 groups, device, ret_state=True, use_ttt3r=use_ttt3r
             )
         res = dict(views=batch, pred=preds)
-    return res, state_args
+    result = to_cpu(res)
+    return result, state_args
 
 def check_if_same_size(pairs):
     shapes1 = [img1["img"].shape[-2:] for img1, img2 in pairs]

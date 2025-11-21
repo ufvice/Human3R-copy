@@ -1864,9 +1864,7 @@ class ARCroco3DStereo(CroCoNet):
 
             if self.msk_head_flag:
                 res["msk"] = msks
-            res_cpu = to_cpu({**res, "smpl_scores": scores, "smpl_loc": loc[None]})
-            ress.append(res_cpu)
-            # ress.append(res)
+            ress.append({**res, "smpl_scores": scores, "smpl_loc": loc[None]})
 
             # updating the state and memory
             img_mask = view["img_mask"]

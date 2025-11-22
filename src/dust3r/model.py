@@ -1624,7 +1624,10 @@ class ARCroco3DStereo(CroCoNet):
             batch_size = view["img"].shape[0]
             img_mask = view["img_mask"].reshape(
                 -1, batch_size
-            )  # Shape: (1, batch_size)
+            )  # Shape: (1, batch_size), kept for state/memory updates
+
+            # Encode all images for this view regardless of img_mask so that
+            # the batch dimension remains static on XLA/TPU.
             imgs = view["img"].unsqueeze(0)  # Shape: (1, batch_size, C, H, W)
             shapes = (
                 view["true_shape"].unsqueeze(0)
@@ -1638,31 +1641,22 @@ class ARCroco3DStereo(CroCoNet):
                 -1, *imgs.shape[2:]
             )  # Shape: (num_views * batch_size, C, H, W)
             shapes = shapes.view(-1, 2)  # Shape: (num_views * batch_size, 2)
-            img_masks_flat = img_mask.view(-1)  # Shape: (num_views * batch_size)
-            selected_imgs = imgs[img_masks_flat]
-            selected_shapes = shapes[img_masks_flat]
-            if selected_imgs.size(0) > 0:
-                img_out, img_pos, _ = self._encode_image(selected_imgs, selected_shapes)
-            else:
-                img_out, img_pos = None, None
+
+            img_out, img_pos, _ = self._encode_image(imgs, shapes)
 
             shape = shapes
             feat_i = img_out[-1]
             pos_i = img_pos
 
-            # MHMR vit
+            # MHMR vit: always process the full batch, masking is applied later
             imgs_mhmr = view["img_mhmr"].unsqueeze(0)  # Shape: (1, batch_size, C, H, W)
             imgs_mhmr = imgs_mhmr.view(
                 -1, *imgs_mhmr.shape[2:]
             )  # Shape: (num_views * batch_size, C, H, W)
-            selected_imgs_mhmr = imgs_mhmr[img_masks_flat]
-            if selected_imgs_mhmr.size(0) > 0:
-                selected_imgs_mhmr = (
-                    selected_imgs_mhmr * 0.5 + 0.5 - mhmr_mean
-                ) / mhmr_std
-                mhmr_img_out = [
-                    self.backbone(selected_imgs_mhmr)
-                ]  # image[bs, 3, h, w] -> image feature [bs, h_patches*w_patches, D]
+            imgs_mhmr = (imgs_mhmr * 0.5 + 0.5 - mhmr_mean) / mhmr_std
+            mhmr_img_out = [
+                self.backbone(imgs_mhmr)
+            ]  # image[bs, 3, h, w] -> image feature [bs, h_patches*w_patches, D]
             feat_mhmr_i = mhmr_img_out[-1]
 
             # MHMR smpl tokenizer
@@ -1764,10 +1758,33 @@ class ARCroco3DStereo(CroCoNet):
 
             if self.pose_head_flag:
                 global_img_feat_i = self._get_img_level_feat(feat_i)
-                if i == 0 or reset_mask:
-                    pose_feat_i = self.pose_token.expand(feat_i.shape[0], -1, -1)
+                # Always compute both candidate pose features and blend them
+                # using a tensor mask to avoid data-dependent Python control flow.
+                pose_token_full = self.pose_token.expand(feat_i.shape[0], -1, -1)
+                pose_feat_prev = self.pose_retriever.inquire(global_img_feat_i, mem)
+
+                reset_tensor = view.get("reset", None)
+                if reset_tensor is None:
+                    reset_mask_tensor = torch.zeros(
+                        feat_i.shape[0], 1, 1, device=device, dtype=feat_i.dtype
+                    )
                 else:
-                    pose_feat_i = self.pose_retriever.inquire(global_img_feat_i, mem)
+                    reset_mask_tensor = reset_tensor.to(
+                        device=device, dtype=feat_i.dtype
+                    ).view(feat_i.shape[0], 1, 1)
+
+                if i == 0:
+                    first_frame_mask = torch.ones_like(reset_mask_tensor)
+                else:
+                    first_frame_mask = torch.zeros_like(reset_mask_tensor)
+
+                combined_reset = torch.clamp(
+                    reset_mask_tensor + first_frame_mask, max=1.0
+                )
+                pose_feat_i = (
+                    pose_token_full * combined_reset
+                    + pose_feat_prev * (1.0 - combined_reset)
+                )
                 pose_pos_i = -torch.ones(
                     feat_i.shape[0], 1, 2, device=device, dtype=pos_i.dtype
                 )
@@ -1926,6 +1943,10 @@ class ARCroco3DStereo(CroCoNet):
                     1 - reset_mask
                 )
                 mem = init_mem * reset_mask + mem * (1 - reset_mask)
+
+            all_state_args.append(
+                (state_feat, state_pos, init_state_feat, mem, init_mem)
+            )
 
             # Force XLA to execute at each frame to avoid gigantic lazy graphs
             # and excessive LazyTracing time on TPU.

@@ -1177,7 +1177,14 @@ class ARCroco3DStereo(CroCoNet):
         pos = pos.view(-1, *pos.shape[2:])  # (num_view * bs, 576, 2)
 
         # Restore Height and Width dimensions.
-        n_patch = views[0]["true_shape"][0] // self.croco_args["patch_size"]  # H,W
+        # true_shape may live on CPU (kept out of to_gpu), so normalize it
+        # onto the same device as feat for XLA-friendly processing.
+        true_shape = views[0]["true_shape"][0]
+        if torch.is_tensor(true_shape):
+            true_shape_dev = true_shape.to(device=feat.device)
+        else:
+            true_shape_dev = torch.as_tensor(true_shape, device=feat.device)
+        n_patch = true_shape_dev // self.croco_args["patch_size"]  # H,W
         feat = rearrange(
             feat, "b (nh nw) c -> b nh nw c", nh=n_patch[0], nw=n_patch[1]
         )  # (num_view * bs, h, w, 1024)
@@ -1186,20 +1193,31 @@ class ARCroco3DStereo(CroCoNet):
         )  # (num_view * bs, h, w, 2)
 
         if inference:
-            num_humans = [l.shape[1] for l in loc]
-            img_id = torch.repeat_interleave(
-                torch.arange(len(loc), device=loc[0].device),
-                torch.tensor(num_humans, device=loc[0].device),
-            )
-            loc = torch.cat([l.squeeze(0) for l in loc], dim=0)  # (nvh, 2)
-            true_shape_hw = views[0]["true_shape"][0]
-            if torch.is_tensor(true_shape_hw):
-                target_height, target_width = true_shape_hw[0], true_shape_hw[1]
+            device = loc[0].device
+            # Build img_id without creating a tensor from a Python list
+            # to avoid extra host->device transfers on XLA.
+            img_id_chunks = []
+            for view_idx, l_view in enumerate(loc):
+                nh = l_view.shape[1]
+                if nh == 0:
+                    continue
+                img_id_chunks.append(
+                    torch.full((nh,), view_idx, device=device, dtype=torch.long)
+                )
+            if img_id_chunks:
+                img_id = torch.cat(img_id_chunks, dim=0)
             else:
-                target_height, target_width = true_shape_hw
+                img_id = torch.empty(0, device=device, dtype=torch.long)
+            loc = torch.cat([l.squeeze(0) for l in loc], dim=0)  # (nvh, 2)
+            # Use device-resident sizes when unpadding to keep everything
+            # in tensor space on XLA/TPU.
+            target_height, target_width = true_shape_dev[0], true_shape_dev[1]
+            original_size_t = torch.as_tensor(
+                float(self.mhmr_img_res), device=device, dtype=loc.dtype
+            )
             loc_cut3r = unpad_uv(
                 loc,
-                self.mhmr_img_res,
+                original_size_t,
                 target_height,
                 target_width,
             )
@@ -1209,18 +1227,17 @@ class ARCroco3DStereo(CroCoNet):
             smpl_mask = torch.stack([view["smpl_mask"] for view in views], dim=0)
             smpl_mask = smpl_mask.view(-1, *smpl_mask.shape[2:])
             max_humans = smpl_mask.shape[1]
-            loc = torch.stack(
-                [l.detach() for l in loc], dim=0
+            loc = torch.stack([l.detach() for l in loc], dim=0).to(
+                device=feat.device
             )  # high-res head uv in mhmr: (num_view, bs, 10, 2)
             loc = loc.view(-1, *loc.shape[2:])  # (num_view * bs, 10, 2)
-            true_shape_hw = views[0]["true_shape"][0]
-            if torch.is_tensor(true_shape_hw):
-                target_height, target_width = true_shape_hw[0], true_shape_hw[1]
-            else:
-                target_height, target_width = true_shape_hw
+            target_height, target_width = true_shape_dev[0], true_shape_dev[1]
+            original_size_t = torch.as_tensor(
+                float(self.mhmr_img_res), device=feat.device, dtype=loc.dtype
+            )
             loc_cut3r = unpad_uv(
                 loc[smpl_mask],
-                self.mhmr_img_res,
+                original_size_t,
                 target_height,
                 target_width,
             )  # high-res head uv in cut3r
@@ -1292,12 +1309,22 @@ class ARCroco3DStereo(CroCoNet):
 
     def token_fuse(self, tk_mhmr, tk_cut3r, inference):
         if inference:
-            num_humans = [t.shape[1] for t in tk_mhmr]
             num_view = len(tk_mhmr)
-            img_id = torch.repeat_interleave(
-                torch.arange(num_view, device=tk_mhmr[0].device),
-                torch.tensor(num_humans, device=tk_mhmr[0].device),
-            )
+            device = tk_mhmr[0].device
+            # Build img_id fully on the device to avoid creating a tensor
+            # from a Python list (which would incur host->device transfer).
+            img_id_chunks = []
+            for view_idx, t_view in enumerate(tk_mhmr):
+                nh = t_view.shape[1]
+                if nh == 0:
+                    continue
+                img_id_chunks.append(
+                    torch.full((nh,), view_idx, device=device, dtype=torch.long)
+                )
+            if img_id_chunks:
+                img_id = torch.cat(img_id_chunks, dim=0)
+            else:
+                img_id = torch.empty(0, device=device, dtype=torch.long)
             tk_mhmr = torch.cat([t.squeeze(0) for t in tk_mhmr], dim=0)  # (nvh, 1024)
             tk_cut3r = torch.cat([t.squeeze(0) for t in tk_cut3r], dim=0)  # (nvh, 1024)
             tk = torch.cat([tk_mhmr, tk_cut3r], dim=-1)  # (nvh, 2048)
@@ -1747,10 +1774,25 @@ class ARCroco3DStereo(CroCoNet):
                 nw=n_patch_cut3r_w,
             )  # (num_view * bs, h, w, 2)
 
+            # Use tensor sizes on the same device as loc to keep
+            # unpad_uv fully device-side on XLA/TPU.
             target_height, target_width = shape[0, 0], shape[0, 1]
+            if not torch.is_tensor(target_height):
+                target_height = torch.as_tensor(
+                    float(target_height), device=loc.device, dtype=loc.dtype
+                )
+                target_width = torch.as_tensor(
+                    float(target_width), device=loc.device, dtype=loc.dtype
+                )
+            else:
+                target_height = target_height.to(device=loc.device, dtype=loc.dtype)
+                target_width = target_width.to(device=loc.device, dtype=loc.dtype)
+            original_size_t = torch.as_tensor(
+                float(self.mhmr_img_res), device=loc.device, dtype=loc.dtype
+            )
             loc_cut3r = unpad_uv(
                 loc,
-                self.mhmr_img_res,
+                original_size_t,
                 target_height,
                 target_width,
             )

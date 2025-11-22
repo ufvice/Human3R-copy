@@ -474,46 +474,59 @@ def unpad_uv(uv, original_size, target_height, target_width):
     Returns:
         uv_transformed: transformed uv coordinates tensor, shape [batch_size, num_points, 2] or [num_points, 2]
     """
-    # Convert sizes to tensors on the correct device/dtype without any
-    # host-side scalar synchronization. This allows passing either Python
-    # ints or 0-d/1-d tensors (e.g. coming from true_shape on XLA/TPU).
     device = uv.device
     dtype = uv.dtype
 
-    if not torch.is_tensor(target_height):
-        target_height_t = torch.tensor(float(target_height), device=device, dtype=dtype)
-    else:
+    # Tensor path: all inputs already tensors. Keep everything on-device
+    # and avoid any host <-> device conversions.
+    if torch.is_tensor(target_height) and torch.is_tensor(target_width) and torch.is_tensor(original_size):
         target_height_t = target_height.to(device=device, dtype=dtype)
-
-    if not torch.is_tensor(target_width):
-        target_width_t = torch.tensor(float(target_width), device=device, dtype=dtype)
-    else:
         target_width_t = target_width.to(device=device, dtype=dtype)
-
-    if not torch.is_tensor(original_size):
-        original_size_t = torch.tensor(float(original_size), device=device, dtype=dtype)
-    else:
         original_size_t = original_size.to(device=device, dtype=dtype)
 
-    # calculate the maximum size of the target
-    max_target = torch.maximum(target_height_t, target_width_t)
+        max_target = torch.maximum(target_height_t, target_width_t)
+        scale_factor = max_target / original_size_t
+        uv_scaled = uv * scale_factor
 
-    # first, scale the uv from original_size to max_target
-    scale_factor = max_target / original_size_t
+        pad_left = torch.floor((max_target - target_width_t) / 2.0)
+        pad_top = torch.floor((max_target - target_height_t) / 2.0)
+
+        # broadcast subtraction
+        uv_transformed = uv_scaled.clone()
+        uv_transformed[..., 0] = uv_transformed[..., 0] - pad_left
+        uv_transformed[..., 1] = uv_transformed[..., 1] - pad_top
+
+        uv_transformed[..., 0] = torch.clamp(
+            uv_transformed[..., 0], 0, target_width_t - 1
+        )
+        uv_transformed[..., 1] = torch.clamp(
+            uv_transformed[..., 1], 0, target_height_t - 1
+        )
+        return uv_transformed
+
+    # Fallback scalar path: inputs are Python scalars. Do not eagerly
+    # construct device tensors; rely on PyTorch scalar promotion.
+    target_height_f = float(target_height)
+    target_width_f = float(target_width)
+    original_size_f = float(original_size)
+
+    max_target = max(target_height_f, target_width_f)
+    scale_factor = max_target / original_size_f
     uv_scaled = uv * scale_factor
 
-    # then, subtract the padding offset (computed in tensor space, with
-    # integer-equivalent behavior to the original //2 logic)
-    pad_left = torch.floor((max_target - target_width_t) / 2.0)
-    pad_top = torch.floor((max_target - target_height_t) / 2.0)
+    pad_left = (max_target - target_width_f) / 2.0
+    pad_top = (max_target - target_height_f) / 2.0
 
-    offset = torch.stack([pad_left, pad_top], dim=-1)
+    uv_transformed = uv_scaled.clone()
+    uv_transformed[..., 0] = uv_transformed[..., 0] - pad_left
+    uv_transformed[..., 1] = uv_transformed[..., 1] - pad_top
 
-    # broadcast subtraction
-    uv_transformed = uv_scaled - offset
-    # clamp uses tensor bounds; no host scalar conversions involved.
-    uv_transformed[..., 0] = torch.clamp(uv_transformed[..., 0], 0, target_width_t - 1)
-    uv_transformed[..., 1] = torch.clamp(uv_transformed[..., 1], 0, target_height_t - 1)
+    uv_transformed[..., 0] = torch.clamp(
+        uv_transformed[..., 0], 0, target_width_f - 1
+    )
+    uv_transformed[..., 1] = torch.clamp(
+        uv_transformed[..., 1], 0, target_height_f - 1
+    )
     return uv_transformed
 
 

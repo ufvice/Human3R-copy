@@ -1618,162 +1618,183 @@ class ARCroco3DStereo(CroCoNet):
             printer.warning(f"torch.compile with backend={backend} failed: {exc}")
             return self
 
+    # -------------------------------------------------------------------------
+    # [Fix] Helper function to avoid CPU syncs in unpad_uv
+    # -------------------------------------------------------------------------
+    def _unpad_uv_tensor_safe(self, uv, original_size, target_height, target_width):
+        """
+        A TPU-friendly version of unpad_uv that assumes all inputs are Tensors
+        and strictly avoids .item(), float(), or int() conversions.
+        """
+        dtype = uv.dtype
+
+        # Ensure scalar size inputs are float tensors without host sync
+        if not target_height.is_floating_point():
+            target_height = target_height.to(dtype)
+        if not target_width.is_floating_point():
+            target_width = target_width.to(dtype)
+
+        if not torch.is_tensor(original_size):
+            original_size = torch.tensor(original_size, device=uv.device, dtype=dtype)
+        else:
+            original_size = original_size.to(device=uv.device, dtype=dtype)
+
+        max_target = torch.maximum(target_height, target_width)
+        scale_factor = max_target / original_size
+        uv_scaled = uv * scale_factor
+
+        pad_left = torch.floor((max_target - target_width) / 2.0)
+        pad_top = torch.floor((max_target - target_height) / 2.0)
+
+        offset = torch.stack([pad_left, pad_top], dim=-1)
+        uv_transformed = uv_scaled - offset
+
+        uv_transformed[..., 0] = torch.clamp(
+            uv_transformed[..., 0], min=0.0, max=(target_width - 1.0)
+        )
+        uv_transformed[..., 1] = torch.clamp(
+            uv_transformed[..., 1], min=0.0, max=(target_height - 1.0)
+        )
+
+        return uv_transformed
+
     def forward_recurrent_lighter(
         self, views, device, ret_state=False, use_ttt3r=False
     ):
         ress = []
         all_state_args = []
-        last_smpl_tk = None
-        last_smpl_id = None
-        max_smpl_id = -1
-        reset_mask = False
 
-        # Pre-create normalization tensors on the target device to avoid
-        # tracing new small constant tensors on every frame when running
-        # under XLA/TPU.
         mhmr_mean = torch.tensor([0.485, 0.456, 0.406], device=device)[
             None, :, None, None
         ]
         mhmr_std = torch.tensor([0.229, 0.224, 0.225], device=device)[
             None, :, None, None
         ]
+
         for i, _view in enumerate(views):
             view = to_gpu(_view, device)
             batch_size = view["img"].shape[0]
-            img_mask = view["img_mask"].reshape(
-                -1, batch_size
-            )  # Shape: (1, batch_size), kept for state/memory updates
 
-            # Encode all images for this view regardless of img_mask so that
-            # the batch dimension remains static on XLA/TPU.
-            imgs = view["img"].unsqueeze(0)  # Shape: (1, batch_size, C, H, W)
-            shapes = (
-                view["true_shape"].unsqueeze(0)
-                if "true_shape" in view
-                else torch.tensor(view["img"].shape[-2:], device=device)
-                .unsqueeze(0)
-                .repeat(batch_size, 1)
-                .unsqueeze(0)
-            )  # Shape: (num_views, batch_size, 2)
-            imgs = imgs.view(
-                -1, *imgs.shape[2:]
-            )  # Shape: (num_views * batch_size, C, H, W)
-            shapes = shapes.view(-1, 2)  # Shape: (num_views * batch_size, 2)
+            # --- Encoding Image (Dust3r) ---
+            imgs = view["img"].unsqueeze(0)
+            if "true_shape" in view:
+                shapes = view["true_shape"].unsqueeze(0)
+            else:
+                s = torch.tensor(view["img"].shape[-2:], device=device)
+                shapes = s.unsqueeze(0).repeat(batch_size, 1).unsqueeze(0)
 
-            img_out, img_pos, _ = self._encode_image(imgs, shapes)
+            imgs = imgs.view(-1, *imgs.shape[2:])
+            shapes_flat = shapes.view(-1, 2)
 
-            shape = shapes
+            img_out, img_pos, _ = self._encode_image(imgs, shapes_flat)
             feat_i = img_out[-1]
             pos_i = img_pos
+            shape = shapes_flat
 
-            # MHMR vit: always process the full batch, masking is applied later
-            imgs_mhmr = view["img_mhmr"].unsqueeze(0)  # Shape: (1, batch_size, C, H, W)
-            imgs_mhmr = imgs_mhmr.view(
-                -1, *imgs_mhmr.shape[2:]
-            )  # Shape: (num_views * batch_size, C, H, W)
+            # --- Encoding Image (MHMR) ---
+            imgs_mhmr = view["img_mhmr"].unsqueeze(0)
+            imgs_mhmr = imgs_mhmr.view(-1, *imgs_mhmr.shape[2:])
             imgs_mhmr = (imgs_mhmr * 0.5 + 0.5 - mhmr_mean) / mhmr_std
-            mhmr_img_out = [
-                self.backbone(imgs_mhmr)
-            ]  # image[bs, 3, h, w] -> image feature [bs, h_patches*w_patches, D]
+            mhmr_img_out = [self.backbone(imgs_mhmr)]
             feat_mhmr_i = mhmr_img_out[-1]
 
-            # MHMR smpl tokenizer
+            # --- MHMR Detection & Tokenizer ---
             n_patch_mhmr = self.bb_token_res
-            scores = self.downstream_head.detect_mhmr(
-                feat_mhmr_i
-            )  # (num_view * bs, h_patches*w_patches, 1)
+            scores = self.downstream_head.detect_mhmr(feat_mhmr_i)
             scores = rearrange(
                 scores, "b (nh nw) c -> b c nh nw", nh=n_patch_mhmr, nw=n_patch_mhmr
-            )  # [num_view * bs, h_nb_patches * w_nb_patches, 1] -> [num_view * bs, 1, h, w]
+            )
+
             if self.msk_head_flag:
-                msks = self.downstream_head.segment(feat_mhmr_i)  # low-res mask
+                msks = self.downstream_head.segment(feat_mhmr_i)
                 msks = rearrange(
                     msks, "b (nh nw) c -> b c nh nw", nh=n_patch_mhmr, nw=n_patch_mhmr
                 )
-                msks = F.pixel_shuffle(
-                    msks, self.bb_patch_size
-                )  # (num_view * bs, 1, h, w)
-                msks = msks.permute((0, 2, 3, 1))
+                msks = F.pixel_shuffle(msks, self.bb_patch_size).permute((0, 2, 3, 1))
+
             feat_mhmr_i = rearrange(
                 feat_mhmr_i,
                 "b (nh nw) c -> b nh nw c",
                 nh=n_patch_mhmr,
                 nw=n_patch_mhmr,
-            )  # head token extraction: (num_view * bs, h, w, 1024)
+            )
 
-            # Use Top-1 selection to enforce static shapes on TPU
-            scores = nms(scores, kernel=3)  # (num_view * bs, 1, h, w)
+            scores = nms(scores, kernel=3)
             B_scores, C_scores, H_scores, W_scores = scores.shape
-            scores_flat = scores.view(B_scores, -1)  # (B, H * W)
-            best_idx = torch.argmax(scores_flat, dim=1)  # (B,)
-            img_id = torch.arange(B_scores, device=scores.device)
+            scores_flat = scores.view(B_scores, -1)
+            best_idx = torch.argmax(scores_flat, dim=1)
+
+            img_id = torch.arange(B_scores, device=device)
             h_id = best_idx // W_scores
             w_id = best_idx % W_scores
-            scores = scores.permute((0, 2, 3, 1))  # (num_view * bs, h, w, 1)
+            scores = scores.permute((0, 2, 3, 1))
 
-            # Head token and offset
-            feat_central_mhmr = feat_mhmr_i[img_id, h_id, w_id]  # (nvh, 1024)
-            offset = self.downstream_head.mlp_offset(feat_central_mhmr)  # [nhv,2]
-            # Distance for estimating the 3D location in 3D space
-            loc = torch.stack([w_id, h_id]).permute(1, 0)  # x,y
-            loc = (
-                loc + 0.5 + offset
-            ) * self.bb_patch_size  # Moving to higher res the location of the pelvis
+            feat_central_mhmr = feat_mhmr_i[img_id, h_id, w_id]
+            offset = self.downstream_head.mlp_offset(feat_central_mhmr)
 
-            smpl_tk_mhmr = feat_central_mhmr.unsqueeze(0)  # use mhmr vit token
-            # current (possibly padded) image size used for token grid
+            loc = torch.stack([w_id, h_id]).permute(1, 0)
+            loc = (loc + 0.5 + offset) * self.bb_patch_size
+
+            smpl_tk_mhmr = feat_central_mhmr.unsqueeze(0)
+
+            # --- CUT3R Tokenizer ---
             img_h, img_w = view["img"].shape[-2:]
-            # For inference on XLA/TPU we only care about a fixed
-            # (H, W) pair here when calling the prediction head, so we
-            # pass a plain Python tuple to avoid any device -> host
-            # scalar synchronizations inside transpose_to_landscape.
             img_shape_head = (int(img_h), int(img_w))
 
-            # CUT3R smpl tokenizer
-            # recover patch grid from the (possibly padded) image size
             patch_size = self.croco_args["patch_size"]
             n_patch_cut3r_h = img_h // patch_size
             n_patch_cut3r_w = img_w // patch_size
+
             feat_cut3r_i = rearrange(
                 feat_i,
                 "b (nh nw) c -> b nh nw c",
                 nh=n_patch_cut3r_h,
                 nw=n_patch_cut3r_w,
-            )  # (num_view * bs, h, w, 1024)
+            )
             pos_cut3r_i = rearrange(
                 pos_i,
                 "b (nh nw) c -> b nh nw c",
                 nh=n_patch_cut3r_h,
                 nw=n_patch_cut3r_w,
-            )  # (num_view * bs, h, w, 2)
+            )
 
-            target_height, target_width = shape[0, 0], shape[0, 1]
-            loc_cut3r = unpad_uv(
+            target_height = shape[:, 0]
+            target_width = shape[:, 1]
+
+            if target_height.numel() == 1:
+                th = target_height[0]
+                tw = target_width[0]
+            else:
+                th = target_height[0]
+                tw = target_width[0]
+
+            loc_cut3r = self._unpad_uv_tensor_safe(
                 loc,
                 self.mhmr_img_res,
-                target_height,
-                target_width,
+                th,
+                tw,
             )
-            smpl_uv_cut3r = (loc_cut3r // self.croco_args["patch_size"]).long()
+
+            smpl_uv_cut3r = (loc_cut3r // patch_size).long()
             w_id_cut3r, h_id_cut3r = smpl_uv_cut3r.T
-            feat_central_cut3r = feat_cut3r_i[
-                img_id, h_id_cut3r, w_id_cut3r
-            ]  # (nvh, 1024)
-            pos_central_cut3r = pos_cut3r_i[img_id, h_id_cut3r, w_id_cut3r]  # (nvh, 2)
+
+            h_id_cut3r = h_id_cut3r.clamp(0, n_patch_cut3r_h - 1)
+            w_id_cut3r = w_id_cut3r.clamp(0, n_patch_cut3r_w - 1)
+
+            feat_central_cut3r = feat_cut3r_i[img_id, h_id_cut3r, w_id_cut3r]
+            pos_central_cut3r = pos_cut3r_i[img_id, h_id_cut3r, w_id_cut3r]
 
             smpl_tk_cut3r = feat_central_cut3r.unsqueeze(0)
             smpl_pos_cut3r = pos_central_cut3r.unsqueeze(0)
 
-            # fuse CUT3R and MHMR smpl tokens
-            fused_tk = torch.cat(
-                [smpl_tk_mhmr, smpl_tk_cut3r], dim=-1
-            )  # (1, nvh, 2048)
-            fused_tk = self.downstream_head.mlp_fuse(fused_tk)  # (1, nvh, 768)
+            # Fuse tokens
+            fused_tk = torch.cat([smpl_tk_mhmr, smpl_tk_cut3r], dim=-1)
+            fused_tk = self.downstream_head.mlp_fuse(fused_tk)
 
-            smpl_feat_i = fused_tk  # (1,nvh, 768)
-            smpl_pos_i = smpl_pos_cut3r  # (1,nvh, 2)
-
+            smpl_feat_i = fused_tk
+            smpl_pos_i = smpl_pos_cut3r
             n_humans_i = smpl_feat_i.shape[1]
+
             if i == 0:
                 state_feat, state_pos = self._init_state(feat_i, pos_i)
                 mem = self.pose_retriever.mem.expand(feat_i.shape[0], -1, -1)
@@ -1782,8 +1803,6 @@ class ARCroco3DStereo(CroCoNet):
 
             if self.pose_head_flag:
                 global_img_feat_i = self._get_img_level_feat(feat_i)
-                # Always compute both candidate pose features and blend them
-                # using a tensor mask to avoid data-dependent Python control flow.
                 pose_token_full = self.pose_token.expand(feat_i.shape[0], -1, -1)
                 pose_feat_prev = self.pose_retriever.inquire(global_img_feat_i, mem)
 
@@ -1815,6 +1834,7 @@ class ARCroco3DStereo(CroCoNet):
             else:
                 pose_feat_i = None
                 pose_pos_i = None
+
             new_state_feat, dec, cross_attn_states = self._recurrent_rollout(
                 state_feat,
                 state_pos,
@@ -1830,11 +1850,10 @@ class ARCroco3DStereo(CroCoNet):
                 update=view.get("update", None),
                 use_ttt3r=use_ttt3r,
             )
+
             out_pose_feat_i = dec[-1][:, 0:1]
-            new_mem = self.pose_retriever.update_mem(
-                mem, global_img_feat_i, out_pose_feat_i
-            )
-            assert len(dec) == self.dec_depth + 1
+            new_mem = self.pose_retriever.update_mem(mem, global_img_feat_i, out_pose_feat_i)
+
             if n_humans_i > 0:
                 head_input = [
                     dec[0].float(),
@@ -1851,8 +1870,8 @@ class ARCroco3DStereo(CroCoNet):
                     dec[self.dec_depth * 3 // 4][:, 1:].float(),
                     dec[self.dec_depth].float(),
                 ]
-                smpl_token = None
                 smpl_token_cat = None
+
             res = self._downstream_head(
                 head_input,
                 img_shape_head,
@@ -1861,84 +1880,17 @@ class ARCroco3DStereo(CroCoNet):
                 smpl_token=smpl_token_cat,
             )
 
-            # tracking
-            # if last_smpl_tk is not None and smpl_token is not None:
-            #     cost_mat = -torch.cdist(last_smpl_tk, smpl_token, p=2)
-            #     cost_mat = log_optimal_transport(
-            #         cost_mat, alpha=torch.tensor(-10.0, device=device), iters=20
-            #     )
-            #     matches = cost_mat[:, :-1, :-1]
-            #     max0, max1 = matches.max(2), matches.max(1)
-            #     indices0, indices1 = max0.indices, max1.indices
-            #     mutual0 = torch.arange(indices0.shape[1], device=device)[
-            #         None
-            #     ] == indices1.gather(1, indices0)
-            #     mutual1 = torch.arange(indices1.shape[1], device=device)[
-            #         None
-            #     ] == indices0.gather(1, indices1)
-            #     zero = matches.new_tensor(0)
-            #     mscores0 = torch.where(mutual0, max0.values.exp(), zero)
-            #     mscores1 = torch.where(mutual1, mscores0.gather(1, indices1), zero)
-
-            #     match_threshold = 0.2
-            #     valid0 = mutual0 & (mscores0 > match_threshold)  # 1,n
-            #     valid1 = mutual1 & valid0.gather(1, indices1)  # 1,m
-            #     # get the final matching indices, invalid matches set to -1
-            #     indices0 = torch.where(
-            #         valid0, indices0, indices0.new_tensor(-1)
-            #     )  # [1, n] current frame matches for last frame
-            #     indices1 = torch.where(
-            #         valid1, indices1, indices1.new_tensor(-1)
-            #     )  # [1, m] last frame matches for current frame
-
-            #     smpl_id = indices1.new_full(indices1.shape, -1)  # 1,m
-            #     valid_match1 = indices1[valid1]
-            #     if valid_match1.numel() > 0:
-            #         smpl_id[valid1] = last_smpl_id.gather(
-            #             1, valid_match1[None]
-            #         ).flatten()
-
-            #     # allocate new ids for unmatched current persons without syncing to host
-            #     max_humans = smpl_id.shape[1]
-            #     base_new_id = max_smpl_id + 1
-            #     frame_new_ids = torch.arange(
-            #         base_new_id, base_new_id + max_humans, device=device
-            #     )[None]
-            #     smpl_id = torch.where(~valid1, frame_new_ids, smpl_id)
-            #     max_smpl_id = max_smpl_id + max_humans
-
-            #     # append unmatched previous persons to the end of the track list
-            #     miss_match_mask0 = ~valid0
-            #     miss_match_id0 = last_smpl_id[miss_match_mask0][None]
-            #     miss_match_tk0 = last_smpl_tk[miss_match_mask0][None]
-            #     last_smpl_id = torch.cat([smpl_id, miss_match_id0], dim=1)
-            #     last_smpl_tk = torch.cat([smpl_token, miss_match_tk0], dim=1)
-            # elif smpl_token is not None:
-            #     # first frame with humans (or first frame after reset)
-            #     smpl_id = torch.arange(n_humans_i, device=device)[None]  # (1, nvh)
-            #     last_smpl_tk = smpl_token.clone()
-            #     last_smpl_id = smpl_id.clone()
-            #     max_smpl_id = n_humans_i - 1
-            # else:
-            #     smpl_id = None
-
-            # if smpl_id is not None:
-            #     res["smpl_id"] = smpl_id
-            # 临时给一个 ID，避免报错
-            if smpl_token is not None:
+            if smpl_token_cat is not None:
                 res["smpl_id"] = torch.arange(n_humans_i, device=device)[None]
-
             if self.msk_head_flag:
                 res["msk"] = msks
+
             ress.append({**res, "smpl_scores": scores, "smpl_loc": loc[None]})
 
-            # updating the state and memory
             img_mask = view["img_mask"]
             update = view.get("update", None)
             if update is not None:
-                update_mask = (
-                    img_mask & update
-                )  # if don't update, then whatever img_mask
+                update_mask = img_mask & update
             else:
                 update_mask = img_mask
             update_mask = update_mask[:, None, None].float()
@@ -1948,32 +1900,21 @@ class ARCroco3DStereo(CroCoNet):
                     torch.cat(cross_attn_states, dim=0),
                     "l h nstate nimg -> 1 nstate nimg (l h)",
                 ).mean(dim=(-1, -2))
-                update_mask_state = (
-                    update_mask * torch.sigmoid(cross_attn_states)[..., None]
-                )
+                update_mask_state = update_mask * torch.sigmoid(cross_attn_states)[..., None]
             else:
                 update_mask_state = update_mask
 
-            state_feat = new_state_feat * update_mask_state + state_feat * (
-                1 - update_mask_state
-            )  # update global state
-            mem = new_mem * update_mask + mem * (
-                1 - update_mask
-            )  # then update local state
+            state_feat = new_state_feat * update_mask_state + state_feat * (1 - update_mask_state)
+            mem = new_mem * update_mask + mem * (1 - update_mask)
+
             reset_mask = view["reset"]
             if reset_mask is not None:
                 reset_mask = reset_mask[:, None, None].float()
-                state_feat = init_state_feat * reset_mask + state_feat * (
-                    1 - reset_mask
-                )
+                state_feat = init_state_feat * reset_mask + state_feat * (1 - reset_mask)
                 mem = init_mem * reset_mask + mem * (1 - reset_mask)
 
-            all_state_args.append(
-                (state_feat, state_pos, init_state_feat, mem, init_mem)
-            )
+            all_state_args.append((state_feat, state_pos, init_state_feat, mem, init_mem))
 
-            # Force XLA to execute at each frame to avoid gigantic lazy graphs
-            # and excessive LazyTracing time on TPU.
             if xm is not None and device.type == "xla":
                 xm.mark_step()
 

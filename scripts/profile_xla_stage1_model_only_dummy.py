@@ -105,11 +105,19 @@ def main():
         ckpt_path = os.path.join(REPO_ROOT, ckpt_path)
     add_path_to_dust3r(ckpt_path)
 
-    from src.dust3r.inference import inference_recurrent_lighter
-    from src.dust3r.model import ARCroco3DStereo
+    if not os.path.isfile(ckpt_path):
+        raise FileNotFoundError(
+            f"[Stage1] Checkpoint file not found: {ckpt_path}\n"
+            f"Please double-check --model_path. It should point to an existing .pth file."
+        )
 
-    print(f"[Stage1] Loading model from {ckpt_path} ...")
-    model = ARCroco3DStereo.from_pretrained(ckpt_path).to(device)
+    from src.dust3r.inference import inference_recurrent_lighter
+    from src.dust3r.model import load_model
+
+    print(f"[Stage1] Loading model from local checkpoint {ckpt_path} ...")
+    # Use the local load_model helper instead of the transformers
+    # from_pretrained() logic, to avoid any HuggingFace hub indirection.
+    model = load_model(ckpt_path, device=device, verbose=True)
     model.eval()
 
     print(

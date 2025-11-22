@@ -105,18 +105,24 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    # Ensure dust3r can be imported from checkpoint path.
+    # Ensure dust3r can be imported from the checkpoint path.
     ckpt_path = args.model_path
     if not os.path.isabs(ckpt_path):
         ckpt_path = os.path.join(REPO_ROOT, ckpt_path)
     add_path_to_dust3r(ckpt_path)
 
+    if not os.path.isfile(ckpt_path):
+        raise FileNotFoundError(
+            f"[Stage2] Checkpoint file not found: {ckpt_path}\n"
+            f"Please double-check --model_path. It should point to an existing .pth file."
+        )
+
     from src.dust3r.inference import inference_recurrent_lighter
-    from src.dust3r.model import ARCroco3DStereo
+    from src.dust3r.model import load_model
     from demo_debug import prepare_output  # reuse the existing post-processing
 
-    print(f"[Stage2] Loading model from {ckpt_path} ...")
-    model = ARCroco3DStereo.from_pretrained(ckpt_path).to(device)
+    print(f"[Stage2] Loading model from local checkpoint {ckpt_path} ...")
+    model = load_model(ckpt_path, device=device, verbose=True)
     model.eval()
 
     print(

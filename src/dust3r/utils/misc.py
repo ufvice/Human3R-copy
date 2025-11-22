@@ -67,6 +67,13 @@ def transpose_to_landscape(head, activate=True):
     """
 
     def wrapper_no(decout, true_shape, **kwargs):
+        # Fast path for inference when true_shape is already a (H, W) tuple/list.
+        # This avoids any device <-> host synchronization (e.g. .cpu(), .item())
+        # which is particularly costly on XLA/TPU.
+        if not isinstance(true_shape, torch.Tensor):
+            H, W = int(true_shape[0]), int(true_shape[1])
+            return head(decout, (H, W), **kwargs)
+
         B = len(true_shape)
         assert true_shape[0:1].allclose(true_shape), "true_shape must be all identical"
         H, W = true_shape[0].cpu().tolist()
@@ -74,6 +81,12 @@ def transpose_to_landscape(head, activate=True):
         return res
 
     def wrapper_yes(decout, true_shape, **kwargs):
+        # Same fast path as above when we already know the target (H, W)
+        # and do not need any orientation logic (e.g. square, padded inputs).
+        if not isinstance(true_shape, torch.Tensor):
+            H, W = int(true_shape[0]), int(true_shape[1])
+            return head(decout, (H, W), **kwargs)
+
         B = len(true_shape)
 
         H, W = int(true_shape.min()), int(true_shape.max())

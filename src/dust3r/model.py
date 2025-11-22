@@ -1711,11 +1711,11 @@ class ARCroco3DStereo(CroCoNet):
             smpl_tk_mhmr = feat_central_mhmr.unsqueeze(0)  # use mhmr vit token
             # current (possibly padded) image size used for token grid
             img_h, img_w = view["img"].shape[-2:]
-            img_shape_head = torch.tensor(
-                [img_h, img_w],
-                device=shape.device,
-                dtype=shape.dtype,
-            ).unsqueeze(0).repeat(batch_size, 1)
+            # For inference on XLA/TPU we only care about a fixed
+            # (H, W) pair here; passing a plain Python tuple avoids
+            # any device -> host scalar synchronizations inside
+            # transpose_to_landscape.
+            img_shape_head = (int(img_h), int(img_w))
 
             # CUT3R smpl tokenizer
             # recover patch grid from the (possibly padded) image size
@@ -1927,8 +1927,9 @@ class ARCroco3DStereo(CroCoNet):
                 )
                 mem = init_mem * reset_mask + mem * (1 - reset_mask)
 
-            # Force XLA to execute periodically to avoid gigantic lazy graphs
-            if xm is not None and device.type == "xla" and (i + 1) % 5 == 0:
+            # Force XLA to execute at each frame to avoid gigantic lazy graphs
+            # and excessive LazyTracing time on TPU.
+            if xm is not None and device.type == "xla":
                 xm.mark_step()
 
         if ret_state:

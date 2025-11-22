@@ -200,40 +200,52 @@ def prepare_input(
     from dust3r.utils.geometry import get_camera_parameters
 
     images = load_images(img_paths, size=size)
+
+    # Pre-compute camera intrinsics for MHMR branch if needed.
+    K_mhmr = None
     if img_res is not None:
-        K_mhmr = get_camera_parameters(img_res, device="cpu") # if use pseudo K
+        K_mhmr = get_camera_parameters(img_res, device="cpu")
 
     views = []
     if raymaps is None and raymap_mask is None:
         # Only images are provided.
         for i in range(len(images)):
+            # 强制将所有图像 Pad 到 (size x size) 的正方形
+            original_img = images[i]["img"]
+            padded_img = pad_image(original_img, size)
+            batch_size = padded_img.shape[0]
+
             view = {
-                "img": images[i]["img"],
+                "img": padded_img,
                 "ray_map": torch.full(
                     (
-                        images[i]["img"].shape[0],
+                        batch_size,
                         6,
-                        images[i]["img"].shape[-2],
-                        images[i]["img"].shape[-1],
+                        size,
+                        size,
                     ),
                     torch.nan,
                 ),
+                # 保留原始尺寸用于后续 unpad / 可视化
                 "true_shape": torch.from_numpy(images[i]["true_shape"]),
                 "idx": i,
                 "instance": str(i),
                 "camera_pose": torch.from_numpy(
                     np.eye(4, dtype=np.float32)
-                    ).unsqueeze(0),
+                ).unsqueeze(0),
                 "img_mask": torch.tensor(True).unsqueeze(0),
                 "ray_mask": torch.tensor(False).unsqueeze(0),
                 "update": torch.tensor(True).unsqueeze(0),
-                "reset": torch.tensor((i+1) % reset_interval == 0).unsqueeze(0),
+                "reset": torch.tensor((i + 1) % reset_interval == 0).unsqueeze(0),
             }
+
             if img_res is not None:
-                view["img_mhmr"] = pad_image(view["img"], img_res)
+                # MHMR 分支使用原始图像再 Pad 到 img_res
+                view["img_mhmr"] = pad_image(original_img, img_res)
                 view["K_mhmr"] = K_mhmr
+
             views.append(view)
-            if (i+1) % reset_interval == 0:
+            if (i + 1) % reset_interval == 0:
                 overlap_view = deepcopy(view)
                 overlap_view["reset"] = torch.tensor(False).unsqueeze(0)
                 views.append(overlap_view)
@@ -245,13 +257,29 @@ def prepare_input(
 
         j = 0
         k = 0
+
+        # 用于占位图像的 batch 和通道维度
+        if len(images) > 0:
+            example_img = images[0]["img"]
+            placeholder_batch = example_img.shape[0]
+            placeholder_channels = example_img.shape[1]
+        else:
+            placeholder_batch = 1
+            placeholder_channels = 3
+
         for i in range(num_views):
+            if img_mask[i]:
+                original_img = images[j]["img"]
+                padded_img = pad_image(original_img, size)
+            else:
+                # 没有图像但需要保持静态形状时，用 NaN 填充的占位图像
+                padded_img = torch.full(
+                    (placeholder_batch, placeholder_channels, size, size),
+                    torch.nan,
+                )
+
             view = {
-                "img": (
-                    images[j]["img"]
-                    if img_mask[i]
-                    else torch.full_like(images[0]["img"], torch.nan)
-                ),
+                "img": padded_img,
                 "ray_map": (
                     raymaps[k]
                     if raymap_mask[i]
@@ -266,21 +294,24 @@ def prepare_input(
                 "instance": str(i),
                 "camera_pose": torch.from_numpy(
                     np.eye(4, dtype=np.float32)
-                    ).unsqueeze(0),
+                ).unsqueeze(0),
                 "img_mask": torch.tensor(img_mask[i]).unsqueeze(0),
                 "ray_mask": torch.tensor(raymap_mask[i]).unsqueeze(0),
                 "update": torch.tensor(img_mask[i]).unsqueeze(0),
-                "reset": torch.tensor((i+1) % reset_interval == 0).unsqueeze(0),
+                "reset": torch.tensor((i + 1) % reset_interval == 0).unsqueeze(0),
             }
-            if img_res is not None:
-                view["img_mhmr"] = pad_image(view["img"], img_res)
+
+            if img_res is not None and img_mask[i]:
+                view["img_mhmr"] = pad_image(original_img, img_res)
                 view["K_mhmr"] = K_mhmr
+
             if img_mask[i]:
                 j += 1
             if raymap_mask[i]:
                 k += 1
+
             views.append(view)
-            if (i+1) % reset_interval == 0:
+            if (i + 1) % reset_interval == 0:
                 overlap_view = deepcopy(view)
                 overlap_view["reset"] = torch.tensor(False).unsqueeze(0)
                 views.append(overlap_view)

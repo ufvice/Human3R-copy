@@ -5,7 +5,6 @@ from dust3r.utils.misc import invalid_to_nans
 from dust3r.utils.geometry import depthmap_to_pts3d, geotrf
 from dust3r.model import ARCroco3DStereo
 from dust3r.smpl_model import SMPLModel
-from dust3r.utils.image import pad_image
 from accelerate import Accelerator
 import re
 
@@ -168,47 +167,9 @@ def inference_recurrent_lighter(
     if verbose:
         print(f">> Inference with model on {len(groups)} image/raymaps")
 
-    # ------------------------------------------------------------------
-    # On XLA/TPU, dynamic image shapes are a major source of graph
-    # recompilations (UncachedCompile). To keep the computation graph
-    # shape-stable across frames, pad all input images in this sequence
-    # to a common square resolution (multiple of the patch size).
-    # This is done once on CPU before tensors are moved to the device.
-    # ------------------------------------------------------------------
-    if len(groups) > 0 and "img" in groups[0]:
-        # Infer patch size from the model configuration or patch_embed.
-        patch_size = None
-        if hasattr(model, "croco_args") and isinstance(
-            getattr(model, "croco_args", None), dict
-        ):
-            patch_size = model.croco_args.get("patch_size", None)
-        if patch_size is None and hasattr(model, "patch_embed"):
-            ps = getattr(model.patch_embed, "patch_size", None)
-            if isinstance(ps, (tuple, list)) and len(ps) > 0:
-                patch_size = int(ps[0])
-        if patch_size is None:
-            patch_size = 16
-
-        max_hw = 0
-        for view in groups:
-            img = view.get("img", None)
-            if not isinstance(img, torch.Tensor):
-                continue
-            h, w = img.shape[-2], img.shape[-1]
-            max_hw = max(max_hw, h, w)
-
-        if max_hw > 0:
-            target_size = ((max_hw + patch_size - 1) // patch_size) * patch_size
-            for view in groups:
-                img = view.get("img", None)
-                if not isinstance(img, torch.Tensor):
-                    continue
-                if (
-                    img.shape[-2] != target_size
-                    or img.shape[-1] != target_size
-                ):
-                    # img shape: [B, C, H, W] or [C, H, W]
-                    view["img"] = pad_image(img, target_size)
+    # [FIX 2]: demo_debug.py 已经在 CPU 端将所有输入图像 Pad 为固定正方形，
+    # 这里不再在 XLA 设备上根据 img.shape 进行动态分支和填充，以避免 Sync Points
+    # 和 Uncached Compile。
 
     with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
         if is_naive:

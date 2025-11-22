@@ -108,12 +108,18 @@ def to_gpu(_view, device):
         ["depthmap", "dataset", "label", "instance", "idx", "rng", 
          "ray_map", "camera_pose", "camera_intrinsics", "ray_mask", "fov_x",
          "fov_y", "T_w2c", "smpl_v3d_w", "smpl_j3d_w", "smpl_v3d_c", "smpl_j3d_c",
-         "smpl_j2d", "smpl_v2d", "smpl_mask", "msk",
+         "smpl_j2d", "smpl_v2d", "smpl_mask", "msk", "true_shape",
          ]
     )
     view = {}
     for name in _view.keys():  # pseudo_focal
         if name in ignore_keys:
+            # Keep metadata tensors (including true_shape and various
+            # camera- / SMPL-related fields) on CPU instead of moving
+            # them to the target device. They are only used as
+            # lightweight side information and may otherwise induce
+            # unnecessary XLA device-to-host transfers.
+            view[name] = _view[name]
             continue
         if isinstance(_view[name], tuple) or isinstance(_view[name], list):
             view[name] = [x.clone().to(device, non_blocking=True) for x in _view[name]]

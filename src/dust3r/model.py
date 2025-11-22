@@ -1374,6 +1374,18 @@ class ARCroco3DStereo(CroCoNet):
             )  # [b, 256, 1536]
 
             assert len(dec) == self.dec_depth + 1
+
+            # Choose the shape argument for the prediction head.
+            # On XLA/TPU we avoid passing a Tensor here to prevent any
+            # device-to-host scalar synchronizations inside
+            # transpose_to_landscape; instead we use the static image
+            # spatial size as a plain Python (H, W) tuple.
+            if feat_i.device.type == "xla":
+                img_h, img_w = views[i]["img"].shape[-2:]
+                img_shape_head = (int(img_h), int(img_w))
+            else:
+                img_shape_head = shape[i]
+
             if n_humans_i > 0:
                 head_input = [
                     dec[0].float(),
@@ -1393,7 +1405,7 @@ class ARCroco3DStereo(CroCoNet):
                 smpl_token = None
             res = self._downstream_head(
                 head_input,
-                shape[i],
+                img_shape_head,
                 pos=pos_i,
                 n_humans=n_humans_i,
                 smpl_token=smpl_token,
@@ -1493,6 +1505,16 @@ class ARCroco3DStereo(CroCoNet):
             )  # [b, 256, 1536]
 
             assert len(dec) == self.dec_depth + 1
+
+            # Same XLA-friendly shape handling as in _forward_impl:
+            # use a plain (H, W) tuple on XLA to avoid any host
+            # synchronization on true_shape inside the head wrapper.
+            if feat_i.device.type == "xla":
+                img_h, img_w = views[i]["img"].shape[-2:]
+                img_shape_head = (int(img_h), int(img_w))
+            else:
+                img_shape_head = shape[i]
+
             head_input = [
                 dec[0].float(),
                 dec[self.dec_depth * 2 // 4][:, 1:].float(),
@@ -1505,7 +1527,7 @@ class ARCroco3DStereo(CroCoNet):
                 smpl_token = None
             res = self._downstream_head(
                 head_input,
-                shape[i],
+                img_shape_head,
                 pos=pos_i,
                 n_humans=n_humans_i,
                 smpl_token=smpl_token,

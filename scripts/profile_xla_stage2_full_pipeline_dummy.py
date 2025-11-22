@@ -17,9 +17,17 @@ Usage:
 
 import argparse
 import os
+import sys
 import time
 
 import torch
+
+# Ensure repository root is on sys.path so that `add_ckpt_path`,
+# `demo_debug`, and `src.*` imports work regardless of the current
+# working directory.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 from add_ckpt_path import add_path_to_dust3r
 
@@ -161,4 +169,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -22,12 +22,15 @@ import time
 
 import torch
 
-# Ensure repository root is on sys.path so that `add_ckpt_path`,
-# `demo_debug`, and `src.*` imports work regardless of the current
-# working directory.
+# Ensure repository root and its `src` directory are on sys.path so that
+# `add_ckpt_path`, `demo_debug`, `src.*` and bare `dust3r.*` imports all
+# work regardless of the current working directory.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
+SRC_ROOT = os.path.join(REPO_ROOT, "src")
+if SRC_ROOT not in sys.path:
+    sys.path.insert(0, SRC_ROOT)
 
 from add_ckpt_path import add_path_to_dust3r
 

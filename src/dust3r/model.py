@@ -1192,7 +1192,17 @@ class ARCroco3DStereo(CroCoNet):
                 torch.tensor(num_humans, device=loc[0].device),
             )
             loc = torch.cat([l.squeeze(0) for l in loc], dim=0)  # (nvh, 2)
-            loc_cut3r = unpad_uv(loc, self.mhmr_img_res, *views[0]["true_shape"][0])
+            true_shape_hw = views[0]["true_shape"][0]
+            if torch.is_tensor(true_shape_hw):
+                target_height, target_width = true_shape_hw[0], true_shape_hw[1]
+            else:
+                target_height, target_width = true_shape_hw
+            loc_cut3r = unpad_uv(
+                loc,
+                self.mhmr_img_res,
+                target_height,
+                target_width,
+            )
             smpl_uv = (loc_cut3r // self.croco_args["patch_size"]).long()
             w_id, h_id = smpl_uv.T
         else:
@@ -1203,8 +1213,16 @@ class ARCroco3DStereo(CroCoNet):
                 [l.detach() for l in loc], dim=0
             )  # high-res head uv in mhmr: (num_view, bs, 10, 2)
             loc = loc.view(-1, *loc.shape[2:])  # (num_view * bs, 10, 2)
+            true_shape_hw = views[0]["true_shape"][0]
+            if torch.is_tensor(true_shape_hw):
+                target_height, target_width = true_shape_hw[0], true_shape_hw[1]
+            else:
+                target_height, target_width = true_shape_hw
             loc_cut3r = unpad_uv(
-                loc[smpl_mask], self.mhmr_img_res, *views[0]["true_shape"][0]
+                loc[smpl_mask],
+                self.mhmr_img_res,
+                target_height,
+                target_width,
             )  # high-res head uv in cut3r
             smpl_uv = (
                 loc_cut3r // self.croco_args["patch_size"]
@@ -1729,7 +1747,13 @@ class ARCroco3DStereo(CroCoNet):
                 nw=n_patch_cut3r_w,
             )  # (num_view * bs, h, w, 2)
 
-            loc_cut3r = unpad_uv(loc, self.mhmr_img_res, *shape[0])
+            target_height, target_width = shape[0, 0], shape[0, 1]
+            loc_cut3r = unpad_uv(
+                loc,
+                self.mhmr_img_res,
+                target_height,
+                target_width,
+            )
             smpl_uv_cut3r = (loc_cut3r // self.croco_args["patch_size"]).long()
             w_id_cut3r, h_id_cut3r = smpl_uv_cut3r.T
             feat_central_cut3r = feat_cut3r_i[

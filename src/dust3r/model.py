@@ -697,10 +697,7 @@ class ARCroco3DStereo(CroCoNet):
         x, pos = self.patch_embed(image, true_shape=true_shape)
         assert self.enc_pos_embed is None
         for blk in self.enc_blocks:
-            if self.gradient_checkpointing and self.training:
-                x = checkpoint(blk, x, pos, use_reentrant=True)
-            else:
-                x = blk(x, pos)
+            x = blk(x, pos)
         x = self.enc_norm(x)
         return [x], pos, None
 
@@ -708,10 +705,7 @@ class ARCroco3DStereo(CroCoNet):
         x, pos = self.patch_embed_ray_map(ray_map, true_shape=true_shape)
         assert self.enc_pos_embed is None
         for blk in self.enc_blocks_ray_map:
-            if self.gradient_checkpointing and self.training:
-                x = checkpoint(blk, x, pos, use_reentrant=True)
-            else:
-                x = blk(x, pos)
+            x = blk(x, pos)
         x = self.enc_norm_ray_map(x)
         return [x], pos, None
 
@@ -901,34 +895,12 @@ class ARCroco3DStereo(CroCoNet):
         final_output.append((f_state, f_img))
         cross_attn_states = []
         for blk_state, blk_img in zip(self.dec_blocks_state, self.dec_blocks):
-            if (
-                self.gradient_checkpointing
-                and self.training
-                and torch.is_grad_enabled()
-            ):
-                f_state, _, cross_attn_state = checkpoint(
-                    blk_state,
-                    *final_output[-1][::+1],
-                    pos_state,
-                    pos_img,
-                    use_ttt3r=use_ttt3r,
-                    use_reentrant=not self.fixed_input_length,
-                )
-                f_img, _, _ = checkpoint(
-                    blk_img,
-                    *final_output[-1][::-1],
-                    pos_img,
-                    pos_state,
-                    use_ttt3r=False,
-                    use_reentrant=not self.fixed_input_length,
-                )
-            else:
-                f_state, _, cross_attn_state = blk_state(
-                    *final_output[-1][::+1], pos_state, pos_img, use_ttt3r=use_ttt3r
-                )
-                f_img, _, _ = blk_img(
-                    *final_output[-1][::-1], pos_img, pos_state, use_ttt3r=False
-                )
+            f_state, _, cross_attn_state = blk_state(
+                *final_output[-1][::+1], pos_state, pos_img, use_ttt3r=use_ttt3r
+            )
+            f_img, _, _ = blk_img(
+                *final_output[-1][::-1], pos_img, pos_state, use_ttt3r=False
+            )
 
             final_output.append((f_state, f_img))
             cross_attn_states.append(cross_attn_state)

@@ -233,36 +233,21 @@ class DPTPts3dPose(nn.Module):
             x_cross = x[:-1] + [token_cross]
 
         with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
-            self_out = checkpoint(
-                self.dpt_self,
-                x,
-                (img_info[0], img_info[1]),
-                use_reentrant=True,
-            )
+            self_out = self.dpt_self(x, (img_info[0], img_info[1]))
 
             final_output = postprocess(self_out, self.depth_mode, self.conf_mode)
             final_output["pts3d_in_self_view"] = final_output.pop("pts3d")
             final_output["conf_self"] = final_output.pop("conf")
 
             if self.has_rgb:
-                rgb_out = checkpoint(
-                    self.dpt_rgb,
-                    x,
-                    (img_info[0], img_info[1]),
-                    use_reentrant=True,
-                )
+                rgb_out = self.dpt_rgb(x, (img_info[0], img_info[1]))
                 rgb_output = postprocess_rgb(rgb_out)
                 final_output.update(rgb_output)
 
             if self.has_pose:
                 pose = postprocess_pose(pose, self.pose_mode)
                 final_output["camera_pose"] = pose  # B,7
-                cross_out = checkpoint(
-                    self.dpt_cross,
-                    x_cross,
-                    (img_info[0], img_info[1]),
-                    use_reentrant=True,
-                )
+                cross_out = self.dpt_cross(x_cross, (img_info[0], img_info[1]))
                 tmp = postprocess(cross_out, self.depth_mode, self.conf_mode)
                 final_output["pts3d_in_other_view"] = tmp.pop("pts3d")
                 final_output["conf"] = tmp.pop("conf")
@@ -474,37 +459,21 @@ class DPTPts3dPoseSMPL(nn.Module):
             x_cross = x[:-1] + [token_cross]
 
         with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
-            self_out = checkpoint(
-                self.dpt_self,
-                x,
-                (img_info[0], img_info[1]),
-                # ret_feat=True,
-                use_reentrant=True,
-            )
+            self_out = self.dpt_self(x, (img_info[0], img_info[1]))
 
             final_output = postprocess(self_out, self.depth_mode, self.conf_mode)
             final_output["pts3d_in_self_view"] = final_output.pop("pts3d")
             final_output["conf_self"] = final_output.pop("conf")
 
             if self.has_rgb:
-                rgb_out = checkpoint(
-                    self.dpt_rgb,
-                    x,
-                    (img_info[0], img_info[1]),
-                    use_reentrant=True,
-                )
+                rgb_out = self.dpt_rgb(x, (img_info[0], img_info[1]))
                 rgb_output = postprocess_rgb(rgb_out)
                 final_output.update(rgb_output)
 
             if self.has_pose:
                 pose = postprocess_pose(pose, self.pose_mode)
                 final_output["camera_pose"] = pose  # B,7
-                cross_out = checkpoint(
-                    self.dpt_cross,
-                    x_cross,
-                    (img_info[0], img_info[1]),
-                    use_reentrant=True,
-                )
+                cross_out = self.dpt_cross(x_cross, (img_info[0], img_info[1]))
                 tmp = postprocess(cross_out, self.depth_mode, self.conf_mode)
                 final_output["pts3d_in_other_view"] = tmp.pop("pts3d")
                 final_output["conf"] = tmp.pop("conf")
@@ -695,36 +664,21 @@ class NaiveDPTPts3dPoseSMPL(nn.Module):
             x_cross = x[:-1] + [token_cross]
 
         with torch.autocast(device_type="xla", dtype=torch.bfloat16, enabled=False):
-            self_out = checkpoint(
-                self.dpt_self,
-                x,
-                (img_info[0], img_info[1]),
-                use_reentrant=True,
-            )
+            self_out = self.dpt_self(x, (img_info[0], img_info[1]))
 
             final_output = postprocess(self_out, self.depth_mode, self.conf_mode)
             final_output["pts3d_in_self_view"] = final_output.pop("pts3d")
             final_output["conf_self"] = final_output.pop("conf")
 
             if self.has_rgb:
-                rgb_out = checkpoint(
-                    self.dpt_rgb,
-                    x,
-                    (img_info[0], img_info[1]),
-                    use_reentrant=True,
-                )
+                rgb_out = self.dpt_rgb(x, (img_info[0], img_info[1]))
                 rgb_output = postprocess_rgb(rgb_out)
                 final_output.update(rgb_output)
 
             if self.has_pose:
                 pose = postprocess_pose(pose, self.pose_mode)
                 final_output["camera_pose"] = pose  # B,7
-                cross_out = checkpoint(
-                    self.dpt_cross,
-                    x_cross,
-                    (img_info[0], img_info[1]),
-                    use_reentrant=True,
-                )
+                cross_out = self.dpt_cross(x_cross, (img_info[0], img_info[1]))
                 tmp = postprocess(cross_out, self.depth_mode, self.conf_mode)
                 final_output["pts3d_in_other_view"] = tmp.pop("pts3d")
                 final_output["conf"] = tmp.pop("conf")

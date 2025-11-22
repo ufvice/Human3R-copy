@@ -547,8 +547,7 @@ if __name__ == "__main__":
     )
     enc_blocks_ray_map.zero_grad()
     for blk in enc_blocks_ray_map:
-
-        x = checkpoint(blk, x, xpos)
+        x = blk(x, xpos)
     enc_blocks_ray_map.zero_grad()
     x.sum().backward()
 

@@ -1821,68 +1821,71 @@ class ARCroco3DStereo(CroCoNet):
             )
 
             # tracking
-            if last_smpl_tk is not None and smpl_token is not None:
-                cost_mat = -torch.cdist(last_smpl_tk, smpl_token, p=2)
-                cost_mat = log_optimal_transport(
-                    cost_mat, alpha=torch.tensor(-10.0, device=device), iters=20
-                )
-                matches = cost_mat[:, :-1, :-1]
-                max0, max1 = matches.max(2), matches.max(1)
-                indices0, indices1 = max0.indices, max1.indices
-                mutual0 = torch.arange(indices0.shape[1], device=device)[
-                    None
-                ] == indices1.gather(1, indices0)
-                mutual1 = torch.arange(indices1.shape[1], device=device)[
-                    None
-                ] == indices0.gather(1, indices1)
-                zero = matches.new_tensor(0)
-                mscores0 = torch.where(mutual0, max0.values.exp(), zero)
-                mscores1 = torch.where(mutual1, mscores0.gather(1, indices1), zero)
+            # if last_smpl_tk is not None and smpl_token is not None:
+            #     cost_mat = -torch.cdist(last_smpl_tk, smpl_token, p=2)
+            #     cost_mat = log_optimal_transport(
+            #         cost_mat, alpha=torch.tensor(-10.0, device=device), iters=20
+            #     )
+            #     matches = cost_mat[:, :-1, :-1]
+            #     max0, max1 = matches.max(2), matches.max(1)
+            #     indices0, indices1 = max0.indices, max1.indices
+            #     mutual0 = torch.arange(indices0.shape[1], device=device)[
+            #         None
+            #     ] == indices1.gather(1, indices0)
+            #     mutual1 = torch.arange(indices1.shape[1], device=device)[
+            #         None
+            #     ] == indices0.gather(1, indices1)
+            #     zero = matches.new_tensor(0)
+            #     mscores0 = torch.where(mutual0, max0.values.exp(), zero)
+            #     mscores1 = torch.where(mutual1, mscores0.gather(1, indices1), zero)
 
-                match_threshold = 0.2
-                valid0 = mutual0 & (mscores0 > match_threshold)  # 1,n
-                valid1 = mutual1 & valid0.gather(1, indices1)  # 1,m
-                # get the final matching indices, invalid matches set to -1
-                indices0 = torch.where(
-                    valid0, indices0, indices0.new_tensor(-1)
-                )  # [1, n] current frame matches for last frame
-                indices1 = torch.where(
-                    valid1, indices1, indices1.new_tensor(-1)
-                )  # [1, m] last frame matches for current frame
+            #     match_threshold = 0.2
+            #     valid0 = mutual0 & (mscores0 > match_threshold)  # 1,n
+            #     valid1 = mutual1 & valid0.gather(1, indices1)  # 1,m
+            #     # get the final matching indices, invalid matches set to -1
+            #     indices0 = torch.where(
+            #         valid0, indices0, indices0.new_tensor(-1)
+            #     )  # [1, n] current frame matches for last frame
+            #     indices1 = torch.where(
+            #         valid1, indices1, indices1.new_tensor(-1)
+            #     )  # [1, m] last frame matches for current frame
 
-                smpl_id = indices1.new_full(indices1.shape, -1)  # 1,m
-                valid_match1 = indices1[valid1]
-                if valid_match1.numel() > 0:
-                    smpl_id[valid1] = last_smpl_id.gather(
-                        1, valid_match1[None]
-                    ).flatten()
+            #     smpl_id = indices1.new_full(indices1.shape, -1)  # 1,m
+            #     valid_match1 = indices1[valid1]
+            #     if valid_match1.numel() > 0:
+            #         smpl_id[valid1] = last_smpl_id.gather(
+            #             1, valid_match1[None]
+            #         ).flatten()
 
-                # allocate new ids for unmatched current persons without syncing to host
-                max_humans = smpl_id.shape[1]
-                base_new_id = max_smpl_id + 1
-                frame_new_ids = torch.arange(
-                    base_new_id, base_new_id + max_humans, device=device
-                )[None]
-                smpl_id = torch.where(~valid1, frame_new_ids, smpl_id)
-                max_smpl_id = max_smpl_id + max_humans
+            #     # allocate new ids for unmatched current persons without syncing to host
+            #     max_humans = smpl_id.shape[1]
+            #     base_new_id = max_smpl_id + 1
+            #     frame_new_ids = torch.arange(
+            #         base_new_id, base_new_id + max_humans, device=device
+            #     )[None]
+            #     smpl_id = torch.where(~valid1, frame_new_ids, smpl_id)
+            #     max_smpl_id = max_smpl_id + max_humans
 
-                # append unmatched previous persons to the end of the track list
-                miss_match_mask0 = ~valid0
-                miss_match_id0 = last_smpl_id[miss_match_mask0][None]
-                miss_match_tk0 = last_smpl_tk[miss_match_mask0][None]
-                last_smpl_id = torch.cat([smpl_id, miss_match_id0], dim=1)
-                last_smpl_tk = torch.cat([smpl_token, miss_match_tk0], dim=1)
-            elif smpl_token is not None:
-                # first frame with humans (or first frame after reset)
-                smpl_id = torch.arange(n_humans_i, device=device)[None]  # (1, nvh)
-                last_smpl_tk = smpl_token.clone()
-                last_smpl_id = smpl_id.clone()
-                max_smpl_id = n_humans_i - 1
-            else:
-                smpl_id = None
+            #     # append unmatched previous persons to the end of the track list
+            #     miss_match_mask0 = ~valid0
+            #     miss_match_id0 = last_smpl_id[miss_match_mask0][None]
+            #     miss_match_tk0 = last_smpl_tk[miss_match_mask0][None]
+            #     last_smpl_id = torch.cat([smpl_id, miss_match_id0], dim=1)
+            #     last_smpl_tk = torch.cat([smpl_token, miss_match_tk0], dim=1)
+            # elif smpl_token is not None:
+            #     # first frame with humans (or first frame after reset)
+            #     smpl_id = torch.arange(n_humans_i, device=device)[None]  # (1, nvh)
+            #     last_smpl_tk = smpl_token.clone()
+            #     last_smpl_id = smpl_id.clone()
+            #     max_smpl_id = n_humans_i - 1
+            # else:
+            #     smpl_id = None
 
-            if smpl_id is not None:
-                res["smpl_id"] = smpl_id
+            # if smpl_id is not None:
+            #     res["smpl_id"] = smpl_id
+            # 临时给一个 ID，避免报错
+            if smpl_token is not None:
+                res["smpl_id"] = torch.arange(n_humans_i, device=device)[None]
 
             if self.msk_head_flag:
                 res["msk"] = msks

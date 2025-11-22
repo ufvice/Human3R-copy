@@ -102,7 +102,7 @@ def interpolate_pos_embed(model, checkpoint_model):
             pos_tokens = torch.nn.functional.interpolate(
                 pos_tokens,
                 size=(new_size, new_size),
-                mode="bicubic",
+                mode="bilinear",
                 align_corners=False,
             )
             pos_tokens = pos_tokens.permute(0, 2, 3, 1).flatten(1, 2)

@@ -6,7 +6,6 @@
 
 import torch
 import torch.nn.functional as F
-import roma
 
 def postprocess(out, depth_mode, conf_mode, pos_z=False):
     """
@@ -194,17 +193,43 @@ def standardize_quaternion(quaternions: torch.Tensor) -> torch.Tensor:
     return torch.where(quaternions[..., 0:1] < 0, -quaternions, quaternions)
 
 
+def _manual_cross_product(a, b):
+    """
+    Manual cross product for 3D vectors to avoid aten::linalg_cross on XLA/TPU.
+    a, b: (..., 3) tensors
+    """
+    x1, y1, z1 = a[..., 0], a[..., 1], a[..., 2]
+    x2, y2, z2 = b[..., 0], b[..., 1], b[..., 2]
+
+    out_x = y1 * z2 - z1 * y2
+    out_y = z1 * x2 - x1 * z2
+    out_z = x1 * y2 - y1 * x2
+
+    return torch.stack((out_x, out_y, out_z), dim=-1)
+
+
 def rot6d_to_rotmat(x, naive_mode=False):
     """
-    6D rotation representation to 3x3 rotation matrix.
+    6D rotation representation to 3x3 rotation matrix using manual Gram-Schmidt
+    to avoid roma dependency and aten::linalg_cross fallback.
     Args:
-        x: (nvh,num_joints*6) Batch of 6-D rotation representations.
+        x: (nvh, num_joints*6) Batch of 6-D rotation representations.
     Returns:
-        torch.Tensor: Batch of corresponding rotation matrices with shape (nvh*num_joints,3,3).
+        torch.Tensor: Batch of corresponding rotation matrices with shape (nvh*num_joints, 3, 3).
     """
     if naive_mode:
-        x = x.reshape(-1,2,3).permute(0, 2, 1).contiguous() # (nvh, num_joints*6) -> (nvh*num_joints, 3, 2) # inherited from MHMR
+        x = x.reshape(-1, 2, 3)
     else:
-        x = x.reshape(-1,3,2).contiguous() # (nvh, num_joints*6) -> (nvh*num_joints, 3, 2)
-    y = roma.special_gramschmidt(x, epsilon=1e-6) # (nvh*num_joints, 3, 3)
-    return y
+        x = x.reshape(-1, 3, 2).permute(0, 2, 1)
+
+    a1 = x[:, 0]
+    a2 = x[:, 1]
+
+    b1 = F.normalize(a1, dim=-1)
+    proj = (a2 * b1).sum(dim=-1, keepdim=True) * b1
+    b2_raw = a2 - proj
+    b2 = F.normalize(b2_raw, dim=-1)
+    b3 = _manual_cross_product(b1, b2)
+
+    rot_mat = torch.stack((b1, b2, b3), dim=-1)
+    return rot_mat

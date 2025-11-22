@@ -16,6 +16,16 @@ import time
 
 import torch
 
+# Make sure `torch.xla` exists when running on XLA so that utilities
+# like torch.utils.checkpoint can resolve the proper device module.
+try:
+    import torch_xla as _torch_xla_mod  # type: ignore
+
+    if not hasattr(torch, "xla"):
+        torch.xla = _torch_xla_mod  # type: ignore[attr-defined]
+except ImportError:
+    _torch_xla_mod = None
+
 # Ensure repository root and its `src` directory are on sys.path so that
 # `add_ckpt_path`, `src.*` and bare `dust3r.*` imports all work regardless
 # of the current working directory.

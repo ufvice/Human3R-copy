@@ -474,24 +474,46 @@ def unpad_uv(uv, original_size, target_height, target_width):
     Returns:
         uv_transformed: transformed uv coordinates tensor, shape [batch_size, num_points, 2] or [num_points, 2]
     """
+    # Convert sizes to tensors on the correct device/dtype without any
+    # host-side scalar synchronization. This allows passing either Python
+    # ints or 0-d/1-d tensors (e.g. coming from true_shape on XLA/TPU).
+    device = uv.device
+    dtype = uv.dtype
+
+    if not torch.is_tensor(target_height):
+        target_height_t = torch.tensor(float(target_height), device=device, dtype=dtype)
+    else:
+        target_height_t = target_height.to(device=device, dtype=dtype)
+
+    if not torch.is_tensor(target_width):
+        target_width_t = torch.tensor(float(target_width), device=device, dtype=dtype)
+    else:
+        target_width_t = target_width.to(device=device, dtype=dtype)
+
+    if not torch.is_tensor(original_size):
+        original_size_t = torch.tensor(float(original_size), device=device, dtype=dtype)
+    else:
+        original_size_t = original_size.to(device=device, dtype=dtype)
+
     # calculate the maximum size of the target
-    max_target = max(target_height, target_width)
-    
+    max_target = torch.maximum(target_height_t, target_width_t)
+
     # first, scale the uv from original_size to max_target
-    scale_factor = max_target / original_size
+    scale_factor = max_target / original_size_t
     uv_scaled = uv * scale_factor
-    
-    # then, subtract the padding offset
-    pad_left = (max_target - target_width) // 2
-    pad_top = (max_target - target_height) // 2
-    
-    # create the offset tensor, shape [2]
-    offset = torch.tensor([pad_left, pad_top], dtype=uv.dtype, device=uv.device)
-    
+
+    # then, subtract the padding offset (computed in tensor space, with
+    # integer-equivalent behavior to the original //2 logic)
+    pad_left = torch.floor((max_target - target_width_t) / 2.0)
+    pad_top = torch.floor((max_target - target_height_t) / 2.0)
+
+    offset = torch.stack([pad_left, pad_top], dim=-1)
+
     # broadcast subtraction
     uv_transformed = uv_scaled - offset
-    uv_transformed[..., 0] = torch.clamp(uv_transformed[..., 0], 0, target_width - 1)   # u
-    uv_transformed[..., 1] = torch.clamp(uv_transformed[..., 1], 0, target_height - 1)  # v
+    # clamp uses tensor bounds; no host scalar conversions involved.
+    uv_transformed[..., 0] = torch.clamp(uv_transformed[..., 0], 0, target_width_t - 1)
+    uv_transformed[..., 1] = torch.clamp(uv_transformed[..., 1], 0, target_height_t - 1)
     return uv_transformed
 
 

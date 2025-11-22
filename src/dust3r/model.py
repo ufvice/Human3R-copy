@@ -1615,6 +1615,16 @@ class ARCroco3DStereo(CroCoNet):
         last_smpl_id = None
         max_smpl_id = -1
         reset_mask = False
+
+        # Pre-create normalization tensors on the target device to avoid
+        # tracing new small constant tensors on every frame when running
+        # under XLA/TPU.
+        mhmr_mean = torch.tensor([0.485, 0.456, 0.406], device=device)[
+            None, :, None, None
+        ]
+        mhmr_std = torch.tensor([0.229, 0.224, 0.225], device=device)[
+            None, :, None, None
+        ]
         for i, _view in enumerate(views):
             view = to_gpu(_view, device)
             batch_size = view["img"].shape[0]
@@ -1653,13 +1663,9 @@ class ARCroco3DStereo(CroCoNet):
             )  # Shape: (num_views * batch_size, C, H, W)
             selected_imgs_mhmr = imgs_mhmr[img_masks_flat]
             if selected_imgs_mhmr.size(0) > 0:
-                mean = torch.tensor([0.485, 0.456, 0.406], device=device)[
-                    None, :, None, None
-                ]
-                std = torch.tensor([0.229, 0.224, 0.225], device=device)[
-                    None, :, None, None
-                ]
-                selected_imgs_mhmr = (selected_imgs_mhmr * 0.5 + 0.5 - mean) / std
+                selected_imgs_mhmr = (
+                    selected_imgs_mhmr * 0.5 + 0.5 - mhmr_mean
+                ) / mhmr_std
                 mhmr_img_out = [
                     self.backbone(selected_imgs_mhmr)
                 ]  # image[bs, 3, h, w] -> image feature [bs, h_patches*w_patches, D]
@@ -1712,9 +1718,9 @@ class ARCroco3DStereo(CroCoNet):
             # current (possibly padded) image size used for token grid
             img_h, img_w = view["img"].shape[-2:]
             # For inference on XLA/TPU we only care about a fixed
-            # (H, W) pair here; passing a plain Python tuple avoids
-            # any device -> host scalar synchronizations inside
-            # transpose_to_landscape.
+            # (H, W) pair here when calling the prediction head, so we
+            # pass a plain Python tuple to avoid any device -> host
+            # scalar synchronizations inside transpose_to_landscape.
             img_shape_head = (int(img_h), int(img_w))
 
             # CUT3R smpl tokenizer
@@ -1902,7 +1908,7 @@ class ARCroco3DStereo(CroCoNet):
                 update_mask = img_mask
             update_mask = update_mask[:, None, None].float()
 
-            if use_ttt3r and i != 0 and not reset_mask:
+            if use_ttt3r and i != 0:
                 cross_attn_states = rearrange(
                     torch.cat(cross_attn_states, dim=0),
                     "l h nstate nimg -> 1 nstate nimg (l h)",

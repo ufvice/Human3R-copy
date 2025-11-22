@@ -162,7 +162,13 @@ def inference_recurrent(groups, model, device, verbose=True):
 
 @torch.no_grad()
 def inference_recurrent_lighter(
-    groups, model, device, verbose=True, is_naive=False, use_ttt3r=False
+    groups,
+    model,
+    device,
+    verbose=True,
+    is_naive=False,
+    use_ttt3r=False,
+    to_cpu_outputs=True,
 ):
     if verbose:
         print(f">> Inference with model on {len(groups)} image/raymaps")
@@ -181,7 +187,12 @@ def inference_recurrent_lighter(
                 groups, device, ret_state=True, use_ttt3r=use_ttt3r
             )
         res = dict(views=batch, pred=preds)
-    result = to_cpu(res)
+
+    if to_cpu_outputs:
+        result = to_cpu(res)
+    else:
+        result = res
+
     return result, state_args
 
 def check_if_same_size(pairs):

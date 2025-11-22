@@ -149,9 +149,15 @@ def main():
     start = time.time()
     with torch.no_grad():
         outputs, _ = inference_recurrent_lighter(
-            views, model, device, verbose=True, use_ttt3r=args.use_ttt3r
+            views,
+            model,
+            device,
+            verbose=True,
+            use_ttt3r=args.use_ttt3r,
+            to_cpu_outputs=False,
         )
-        # outputs are kept on CPU via to_cpu inside inference_recurrent_lighter.
+        # For Stage 1 profiling we keep outputs on XLA to avoid
+        # measuring device->host transfer time here.
     if xm is not None and "xla" in str(device):
         xm.mark_step()
         xm.wait_device_ops()

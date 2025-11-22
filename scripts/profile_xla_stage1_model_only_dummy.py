@@ -96,13 +96,16 @@ def main():
     print(f"[Stage1] Using device: {device}")
 
     # Make sure dust3r package can be imported from the checkpoint path.
-    add_path_to_dust3r(args.model_path)
+    ckpt_path = args.model_path
+    if not os.path.isabs(ckpt_path):
+        ckpt_path = os.path.join(REPO_ROOT, ckpt_path)
+    add_path_to_dust3r(ckpt_path)
 
     from src.dust3r.inference import inference_recurrent_lighter
     from src.dust3r.model import ARCroco3DStereo
 
-    print(f"[Stage1] Loading model from {args.model_path} ...")
-    model = ARCroco3DStereo.from_pretrained(args.model_path).to(device)
+    print(f"[Stage1] Loading model from {ckpt_path} ...")
+    model = ARCroco3DStereo.from_pretrained(ckpt_path).to(device)
     model.eval()
 
     print(

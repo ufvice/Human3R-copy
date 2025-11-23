@@ -161,8 +161,8 @@ class RoPE2D(torch.nn.Module):
         ), "number of dimensions should be a multiple of two"
         D = tokens.size(3) // 2
         assert positions.ndim == 3 and positions.shape[-1] == 2  # Batch, Seq, 2
-        # Use a fixed sequence length for TPU-friendly static shapes.
-        seq_len = 512
+        # Use a fixed, sufficiently large sequence length for TPU-friendly static shapes.
+        seq_len = 8192
         cos, sin = self.get_cos_sin(D, seq_len, tokens.device, tokens.dtype)
         # split features into two along the feature dimension, and apply rope1d on each half
         y, x = tokens.chunk(2, dim=-1)

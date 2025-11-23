@@ -142,6 +142,8 @@ class RoPE2D(torch.nn.Module):
 
     def apply_rope1d(self, tokens, pos1d, cos, sin):
         assert pos1d.ndim == 2
+        # Ensure index dtype is integer and within range of the precomputed tables.
+        pos1d = pos1d.to(dtype=torch.long)
         cos = torch.nn.functional.embedding(pos1d, cos)[:, None, :, :]
         sin = torch.nn.functional.embedding(pos1d, sin)[:, None, :, :]
         return (tokens * cos) + (self.rotate_half(tokens) * sin)
@@ -159,9 +161,8 @@ class RoPE2D(torch.nn.Module):
         ), "number of dimensions should be a multiple of two"
         D = tokens.size(3) // 2
         assert positions.ndim == 3 and positions.shape[-1] == 2  # Batch, Seq, 2
-        # Use the (static) sequence length instead of a data-dependent max()
-        # to avoid host-device synchronizations on accelerators like TPU.
-        seq_len = positions.size(1)
+        # Use a fixed sequence length for TPU-friendly static shapes.
+        seq_len = 512
         cos, sin = self.get_cos_sin(D, seq_len, tokens.device, tokens.dtype)
         # split features into two along the feature dimension, and apply rope1d on each half
         y, x = tokens.chunk(2, dim=-1)

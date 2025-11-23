@@ -489,6 +489,29 @@ class ARCroco3DStereo(CroCoNet):
         if all(k.startswith("module") for k in ckpt):
             ckpt = strip_module(ckpt)
         new_ckpt = dict(ckpt)
+
+        # Handle backbone weights separately so that Dinov2Backbone can
+        # perform on-the-fly conversion from torch.hub to HF format.
+        backbone_prefix = "backbone."
+        backbone_keys = [k for k in new_ckpt.keys() if k.startswith(backbone_prefix)]
+        if backbone_keys:
+            backbone_state = {
+                k[len(backbone_prefix) :]: v
+                for k, v in new_ckpt.items()
+                if k.startswith(backbone_prefix)
+            }
+            try:
+                # strict=False to allow partial loading / conversion
+                self.backbone.load_state_dict(backbone_state, strict=False)
+            except Exception as e:
+                printer.info(
+                    f"[ARCroco3DStereo] Warning: failed to load backbone weights with "
+                    f"Dinov2Backbone.load_state_dict: {e}"
+                )
+            # Remove backbone entries so the parent class does not try
+            # to load them again (and report them as missing/unexpected).
+            for k in backbone_keys:
+                new_ckpt.pop(k)
         if not any(k.startswith("dec_blocks_state") for k in ckpt):
             for key, value in ckpt.items():
                 if key.startswith("dec_blocks"):

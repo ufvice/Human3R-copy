@@ -126,21 +126,17 @@ class Dinov2Backbone(nn.Module):
                     suffix = ".".join(parts[2:])
                     prefix = f"model.encoder.layer.{layer_idx}."
 
-                    # Norms
+                    # Norms: keep original naming, move under encoder.layer.{i}
                     if suffix.startswith("norm1."):
-                        sub_name = suffix.replace("norm1.", "layernorm_before.")
-                        new_key = prefix + sub_name
+                        new_key = prefix + suffix
                     elif suffix.startswith("norm2."):
-                        sub_name = suffix.replace("norm2.", "layernorm_after.")
-                        new_key = prefix + sub_name
+                        new_key = prefix + suffix
 
-                    # MLP
+                    # MLP: keep original naming mlp.fc1 / mlp.fc2
                     elif suffix.startswith("mlp.fc1."):
-                        sub_name = suffix.replace("mlp.fc1.", "intermediate.dense.")
-                        new_key = prefix + sub_name
+                        new_key = prefix + suffix
                     elif suffix.startswith("mlp.fc2."):
-                        sub_name = suffix.replace("mlp.fc2.", "output.dense.")
-                        new_key = prefix + sub_name
+                        new_key = prefix + suffix
 
                     # Attention output projection
                     elif suffix.startswith("attn.proj."):
@@ -235,4 +231,3 @@ class Dinov2Backbone(nn.Module):
         )
 
         return converted
-

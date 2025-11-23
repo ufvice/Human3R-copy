@@ -3,68 +3,236 @@
 # CC BY-NC-SA 4.0 license
 
 import torch
-from torch import nn
-import math
-import torch.nn.functional as F
-
-# [FIX] Define a bilinear-only interpolation function for DINOv2
-def interpolate_pos_encoding_bilinear(self, x, w, h):
-    previous_dtype = x.dtype
-    npatch = x.shape[1] - 1
-    N = self.pos_embed.shape[1] - 1
-    if npatch == N and w == h:
-        return self.pos_embed
-    
-    pos_embed = self.pos_embed.float()
-    class_pos_embed = pos_embed[:, 0]
-    patch_pos_embed = pos_embed[:, 1:]
-    dim = x.shape[-1]
-    w0 = w // self.patch_size
-    h0 = h // self.patch_size
-    
-    # We add a small number to see if N is close to square
-    # (This logic is copied from original DINOv2 but adapted for bilinear)
-    M = int(math.sqrt(N))
-    assert N == M * M
-    
-    kwargs = {}
-    
-    # Force bilinear interpolation
-    kwargs["mode"] = "bilinear"
-    kwargs["align_corners"] = False
-        
-    patch_pos_embed = F.interpolate(
-        patch_pos_embed.reshape(1, M, M, dim).permute(0, 3, 1, 2),
-        size=(h0, w0),
-        **kwargs,
-    )
-    patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1).view(1, -1, dim)
-    return torch.cat((class_pos_embed.unsqueeze(0), patch_pos_embed), dim=1).to(previous_dtype)
+import torch.nn as nn
+from transformers import Dinov2Model, Dinov2Config
 
 
 class Dinov2Backbone(nn.Module):
-    def __init__(self, name='dinov2_vitb14', pretrained=False, *args, **kwargs):
+    def __init__(self, name: str = "dinov2_vitl14", pretrained: bool = False, *args, **kwargs):
         super().__init__()
         self.name = name
-        # Load the model from hub
-        self.encoder = torch.hub.load('facebookresearch/dinov2', self.name, pretrained=pretrained)
-        
-        # [FIX] Monkey patch the encoder's interpolate_pos_encoding method
-        # Bind the new method to the encoder instance
-        self.encoder.interpolate_pos_encoding = interpolate_pos_encoding_bilinear.__get__(self.encoder, self.encoder.__class__)
 
-        self.patch_size = self.encoder.patch_size
-        self.embed_dim = self.encoder.embed_dim
+        # Map original backbone names to Hugging Face model ids
+        model_map = {
+            "dinov2_vitl14": "facebook/dinov2-vit-large-14",
+            "dinov2_vitb14": "facebook/dinov2-vit-base-14",
+            "dinov2_vits14": "facebook/dinov2-vit-small-14",
+            "dinov2_vitg14": "facebook/dinov2-vit-giant-14",
+        }
+        hf_name = model_map.get(self.name, "facebook/dinov2-vit-large-14")
 
-    def forward(self, x):
+        # Load HF model
+        if pretrained:
+            self.model = Dinov2Model.from_pretrained(hf_name)
+        else:
+            config = Dinov2Config.from_pretrained(hf_name)
+            self.model = Dinov2Model(config)
+
+        # Expose attributes expected by existing code
+        self.patch_size = self.model.config.patch_size
+        self.embed_dim = self.model.config.hidden_size
+
+        # Backward-compatible reference name
+        self.encoder = self.model
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Encode a RGB image using a ViT-backbone
         Args:
-            - x: torch.Tensor of shape [bs,3,w,h]
+            - x: torch.Tensor of shape [bs,3,h,w]
         Return:
             - y: torch.Tensor of shape [bs,k,d] - image in patchified mode
+                 (patch tokens only, no CLS / registers)
         """
         assert len(x.shape) == 4
-        # The encoder will now use our bilinear interpolation when calling prepare_tokens -> interpolate_pos_encoding
-        y = self.encoder.get_intermediate_layers(x)[0] # ViT-L+896x896: [bs,4096,1024] - [bs,nb_patches,emb]
+        outputs = self.model(pixel_values=x)
+
+        # last_hidden_state: [B, 1 + N_patches (+ N_reg), D]
+        # Drop CLS (index 0). Standard facebook/dinov2-* do not use registers.
+        y = outputs.last_hidden_state[:, 1:, :]
         return y
+
+    def load_state_dict(self, state_dict, strict: bool = True):
+        """
+        Override load_state_dict to support:
+        - Native HF Dinov2Model checkpoints (no conversion).
+        - Old torch.hub-style DINOv2 weights (encoder.* / blocks.* / qkv), via
+          on-the-fly key conversion and QKV splitting.
+        """
+        # Heuristic: detect torch.hub-style encoder blocks / qkv
+        is_old_format = any(
+            "encoder.blocks.0.attn.qkv.weight" in k
+            or "encoder.blocks.0.norm1.weight" in k
+            or "blocks.0.attn.qkv.weight" in k
+            or "blocks.0.norm1.weight" in k
+            for k in state_dict.keys()
+        )
+
+        if is_old_format:
+            print("[Dinov2Backbone] Detected torch.hub-style backbone weights.")
+            print("[Dinov2Backbone] Converting keys to Hugging Face Dinov2 format...")
+            converted = self._convert_hub_to_hf(state_dict)
+            return super().load_state_dict(converted, strict=strict)
+        else:
+            print("[Dinov2Backbone] HF-style weights detected, no key conversion performed.")
+            return super().load_state_dict(state_dict, strict=strict)
+
+    def _convert_hub_to_hf(self, state_dict):
+        """
+        Convert torch.hub DINOv2 weights to HF Transformers Dinov2Model format.
+
+        This function:
+        - Renames top-level encoder / embedding keys.
+        - Splits fused qkv matrices into separate query/key/value parameters.
+        - Prints mapping for every original key (converted, unchanged, or skipped).
+        """
+        converted = {}
+        hidden_size = self.embed_dim
+
+        total_keys = 0
+        mapped_keys = 0
+        qkv_split_layers = set()
+
+        for orig_key, val in state_dict.items():
+            total_keys += 1
+            key = orig_key
+
+            # Strip leading "encoder." if present (torch.hub backbone.encoder.*)
+            if key.startswith("encoder."):
+                inner_key = key[len("encoder.") :]
+            else:
+                inner_key = key
+
+            new_key = None
+
+            # --- 1. Embeddings ---
+            if inner_key == "cls_token":
+                new_key = "model.embeddings.cls_token"
+            elif inner_key == "mask_token":
+                new_key = "model.embeddings.mask_token"
+            elif inner_key == "pos_embed":
+                new_key = "model.embeddings.position_embeddings"
+            elif inner_key == "patch_embed.proj.weight":
+                new_key = "model.embeddings.patch_embeddings.projection.weight"
+            elif inner_key == "patch_embed.proj.bias":
+                new_key = "model.embeddings.patch_embeddings.projection.bias"
+
+            # --- 2. Encoder blocks ---
+            elif inner_key.startswith("blocks."):
+                # inner_key format: blocks.{idx}.{suffix}
+                parts = inner_key.split(".")
+                if len(parts) >= 3:
+                    layer_idx = parts[1]
+                    suffix = ".".join(parts[2:])
+                    prefix = f"model.encoder.layer.{layer_idx}."
+
+                    # Norms
+                    if suffix.startswith("norm1."):
+                        sub_name = suffix.replace("norm1.", "layernorm_before.")
+                        new_key = prefix + sub_name
+                    elif suffix.startswith("norm2."):
+                        sub_name = suffix.replace("norm2.", "layernorm_after.")
+                        new_key = prefix + sub_name
+
+                    # MLP
+                    elif suffix.startswith("mlp.fc1."):
+                        sub_name = suffix.replace("mlp.fc1.", "intermediate.dense.")
+                        new_key = prefix + sub_name
+                    elif suffix.startswith("mlp.fc2."):
+                        sub_name = suffix.replace("mlp.fc2.", "output.dense.")
+                        new_key = prefix + sub_name
+
+                    # Attention output projection
+                    elif suffix.startswith("attn.proj."):
+                        sub_name = suffix.replace("attn.proj.", "attention.output.dense.")
+                        new_key = prefix + sub_name
+
+                    # Layer scale
+                    elif suffix.startswith("ls1"):
+                        new_key = prefix + "layer_scale1.lambda1"
+                    elif suffix.startswith("ls2"):
+                        new_key = prefix + "layer_scale2.lambda1"
+
+                    # QKV fused parameters: special handling
+                    elif "attn.qkv." in suffix:
+                        base_attn = f"model.encoder.layer.{layer_idx}.attention.attention"
+
+                        if "weight" in suffix:
+                            # val: [3*D, D] -> three [D, D]
+                            if val.shape[0] != 3 * hidden_size:
+                                print(
+                                    f"[Dinov2Backbone] WARNING: qkv.weight shape mismatch for {orig_key}: "
+                                    f"expected 3*{hidden_size}, got {val.shape}"
+                                )
+                            q, k, v = torch.chunk(val, 3, dim=0)
+                            q_key = f"{base_attn}.query.weight"
+                            k_key = f"{base_attn}.key.weight"
+                            v_key = f"{base_attn}.value.weight"
+                            converted[q_key] = q
+                            converted[k_key] = k
+                            converted[v_key] = v
+                            mapped_keys += 3
+                            qkv_split_layers.add(layer_idx)
+                            print(
+                                f"[Dinov2Backbone] map: {orig_key} -> {q_key} [Q weight]"
+                            )
+                            print(
+                                f"[Dinov2Backbone] map: {orig_key} -> {k_key} [K weight]"
+                            )
+                            print(
+                                f"[Dinov2Backbone] map: {orig_key} -> {v_key} [V weight]"
+                            )
+                            continue
+
+                        if "bias" in suffix:
+                            # val: [3*D] -> three [D]
+                            if val.shape[0] != 3 * hidden_size:
+                                print(
+                                    f"[Dinov2Backbone] WARNING: qkv.bias shape mismatch for {orig_key}: "
+                                    f"expected 3*{hidden_size}, got {val.shape}"
+                                )
+                            q, k, v = torch.chunk(val, 3, dim=0)
+                            q_key = f"{base_attn}.query.bias"
+                            k_key = f"{base_attn}.key.bias"
+                            v_key = f"{base_attn}.value.bias"
+                            converted[q_key] = q
+                            converted[k_key] = k
+                            converted[v_key] = v
+                            mapped_keys += 3
+                            qkv_split_layers.add(layer_idx)
+                            print(
+                                f"[Dinov2Backbone] map: {orig_key} -> {q_key} [Q bias]"
+                            )
+                            print(
+                                f"[Dinov2Backbone] map: {orig_key} -> {k_key} [K bias]"
+                            )
+                            print(
+                                f"[Dinov2Backbone] map: {orig_key} -> {v_key} [V bias]"
+                            )
+                            continue
+
+            # --- 3. Final layer norm ---
+            elif inner_key == "norm.weight":
+                new_key = "model.layernorm.weight"
+            elif inner_key == "norm.bias":
+                new_key = "model.layernorm.bias"
+
+            # Default behavior: if nothing matched, keep the original key
+            if new_key is None:
+                new_key = orig_key
+                print(
+                    f"[Dinov2Backbone] map: {orig_key} -> {new_key} [unchanged or unmapped]"
+                )
+            else:
+                mapped_keys += 1
+                print(f"[Dinov2Backbone] map: {orig_key} -> {new_key}")
+
+            converted[new_key] = val
+
+        print(
+            f"[Dinov2Backbone] conversion summary: total_keys={total_keys}, "
+            f"mapped_keys={mapped_keys}, qkv_split_layers={sorted(qkv_split_layers)}"
+        )
+
+        return converted
+

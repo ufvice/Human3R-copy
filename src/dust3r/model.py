@@ -1003,12 +1003,14 @@ class ARCroco3DStereo(CroCoNet):
 
         # Restore Height and Width dimensions.
         n_patch = self.bb_token_res  # H,W
-        scores = rearrange(scores, "b (nh nw) c -> b c nh nw", nh=n_patch, nw=n_patch)
-        feat = rearrange(
-            feat, "b (nh nw) c -> b nh nw c", nh=n_patch, nw=n_patch
+        B_scores, HW_scores, C_scores = scores.shape
+        scores = scores.view(B_scores, n_patch, n_patch, C_scores).permute(0, 3, 1, 2)
+        feat = feat.view(
+            feat.shape[0], n_patch, n_patch, feat.shape[-1]
         )  # head token extraction: (num_view * bs, h, w, 1024)
         if self.msk_head_flag:
-            msks = rearrange(msks, "b (nh nw) c -> b c nh nw", nh=n_patch, nw=n_patch)
+            B_msks, HW_msks, C_msks = msks.shape
+            msks = msks.view(B_msks, n_patch, n_patch, C_msks).permute(0, 3, 1, 2)
             msks = F.pixel_shuffle(msks, self.bb_patch_size)  # (num_view * bs, 1, h, w)
 
         if self.output_mode == "naive":
@@ -1059,9 +1061,8 @@ class ARCroco3DStereo(CroCoNet):
             feat_central = torch.cat(
                 [feat_central, feat_K_central], 1
             )  # feature + camera embedding for heads only to query tokens [nhv, 1123]
-            feat_all = torch.cat([feat, feat_K], -1).permute(
-                0, 3, 1, 2
-            )  # feature + camera embedding for full image for the cross-attention only. [bs,1123,nh,nw]
+            feat_all = torch.cat([feat, feat_K], -1).permute(0, 3, 1, 2)
+            # feature + camera embedding for full image for the cross-attention only. [bs,1123,nh,nw]
 
             # Get learned embeddings for queries, at positions with detected people.
             queries_xy = self.cross_queries_x[h_id] + self.cross_queries_y[w_id]
@@ -1070,8 +1071,9 @@ class ARCroco3DStereo(CroCoNet):
             # Inject leared embeddings for key/values at detected locations.
             values_xy = self.cross_values_x[h_id] + self.cross_values_y[w_id]
             feat_all[img_id, :, h_id, w_id] += values_xy  # [bs, 1123, nh, nw]
-            feat_all = rearrange(
-                feat_all, "b c h w -> b (h w) c"
+            B_all, C_all, H_all, W_all = feat_all.shape
+            feat_all = feat_all.permute(0, 2, 3, 1).reshape(
+                B_all, H_all * W_all, C_all
             )  # (num_view * bs, nh*nw, 1024)
 
         if inference:
@@ -1178,11 +1180,11 @@ class ARCroco3DStereo(CroCoNet):
 
         # Restore Height and Width dimensions.
         n_patch = views[0]["true_shape"][0] // self.croco_args["patch_size"]  # H,W
-        feat = rearrange(
-            feat, "b (nh nw) c -> b nh nw c", nh=n_patch[0], nw=n_patch[1]
+        feat = feat.view(
+            feat.shape[0], n_patch[0], n_patch[1], feat.shape[-1]
         )  # (num_view * bs, h, w, 1024)
-        pos = rearrange(
-            pos, "b (nh nw) c -> b nh nw c", nh=n_patch[0], nw=n_patch[1]
+        pos = pos.view(
+            pos.shape[0], n_patch[0], n_patch[1], pos.shape[-1]
         )  # (num_view * bs, h, w, 2)
 
         if inference:
@@ -1349,6 +1351,7 @@ class ARCroco3DStereo(CroCoNet):
         for i in range(len(views)):
             feat_i = feat[i]
             pos_i = pos[i]
+            num_patches = feat_i.shape[1]
             smpl_feat_i = smpl_query[i]
             smpl_pos_i = pos_central[i]
             n_humans_i = smpl_feat_i.shape[1]
@@ -1404,22 +1407,28 @@ class ARCroco3DStereo(CroCoNet):
             else:
                 img_shape_head = shape[i]
 
+            patch_start = 1
+            patch_end = 1 + num_patches
+
+            dec_mid_2 = dec[self.dec_depth * 2 // 4][:, patch_start:patch_end].float()
+            dec_mid_3 = dec[self.dec_depth * 3 // 4][:, patch_start:patch_end].float()
+
+            dec_last = dec[self.dec_depth]
+            dec_last_pose = dec_last[:, :1]
+            dec_last_patches = dec_last[:, patch_start:patch_end]
+            dec_last_head = torch.cat([dec_last_pose, dec_last_patches], dim=1).float()
+
+            head_input = [
+                dec[0].float(),
+                dec_mid_2,
+                dec_mid_3,
+                dec_last_head,
+            ]
+
             if n_humans_i > 0:
-                head_input = [
-                    dec[0].float(),
-                    dec[self.dec_depth * 2 // 4][:, 1:-n_humans_i].float(),
-                    dec[self.dec_depth * 3 // 4][:, 1:-n_humans_i].float(),
-                    dec[self.dec_depth][:, :-n_humans_i].float(),
-                ]
-                smpl_token = dec[self.dec_depth][:, -n_humans_i:].float()
+                smpl_token = dec_last[:, patch_end : patch_end + n_humans_i].float()
                 smpl_token = torch.cat([smpl_token, smpl_tk_mhmr[i]], dim=-1)
             else:
-                head_input = [
-                    dec[0].float(),
-                    dec[self.dec_depth * 2 // 4][:, 1:].float(),
-                    dec[self.dec_depth * 3 // 4][:, 1:].float(),
-                    dec[self.dec_depth].float(),
-                ]
                 smpl_token = None
             res = self._downstream_head(
                 head_input,
@@ -1440,19 +1449,15 @@ class ARCroco3DStereo(CroCoNet):
             else:
                 update_mask = img_mask
             update_mask = update_mask[:, None, None].float()
-            state_feat = new_state_feat * update_mask + state_feat * (
-                1 - update_mask
-            )  # update global state
-            mem = new_mem * update_mask + mem * (
-                1 - update_mask
-            )  # then update local state
+            update_mask_bool = update_mask.to(dtype=torch.bool)
+            state_feat = torch.where(update_mask_bool, new_state_feat, state_feat)
+            mem = torch.where(update_mask_bool, new_mem, mem)
             reset_mask = views[i]["reset"]
             if reset_mask is not None:
                 reset_mask = reset_mask[:, None, None].float()
-                state_feat = init_state_feat * reset_mask + state_feat * (
-                    1 - reset_mask
-                )
-                mem = init_mem * reset_mask + mem * (1 - reset_mask)
+                reset_mask_bool = reset_mask.to(dtype=torch.bool)
+                state_feat = torch.where(reset_mask_bool, init_state_feat, state_feat)
+                mem = torch.where(reset_mask_bool, init_mem, mem)
             all_state_args.append(
                 (state_feat, state_pos, init_state_feat, mem, init_mem)
             )
@@ -1561,19 +1566,15 @@ class ARCroco3DStereo(CroCoNet):
             else:
                 update_mask = img_mask
             update_mask = update_mask[:, None, None].float()
-            state_feat = new_state_feat * update_mask + state_feat * (
-                1 - update_mask
-            )  # update global state
-            mem = new_mem * update_mask + mem * (
-                1 - update_mask
-            )  # then update local state
+            update_mask_bool = update_mask.to(dtype=torch.bool)
+            state_feat = torch.where(update_mask_bool, new_state_feat, state_feat)
+            mem = torch.where(update_mask_bool, new_mem, mem)
             reset_mask = views[i]["reset"]
             if reset_mask is not None:
                 reset_mask = reset_mask[:, None, None].float()
-                state_feat = init_state_feat * reset_mask + state_feat * (
-                    1 - reset_mask
-                )
-                mem = init_mem * reset_mask + mem * (1 - reset_mask)
+                reset_mask_bool = reset_mask.to(dtype=torch.bool)
+                state_feat = torch.where(reset_mask_bool, init_state_feat, state_feat)
+                mem = torch.where(reset_mask_bool, init_mem, mem)
             all_state_args.append(
                 (state_feat, state_pos, init_state_feat, mem, init_mem)
             )
@@ -1701,22 +1702,24 @@ class ARCroco3DStereo(CroCoNet):
             # --- MHMR Detection & Tokenizer ---
             n_patch_mhmr = self.bb_token_res
             scores = self.downstream_head.detect_mhmr(feat_mhmr_i)
-            scores = rearrange(
-                scores, "b (nh nw) c -> b c nh nw", nh=n_patch_mhmr, nw=n_patch_mhmr
+            B_scores, HW_scores, C_scores = scores.shape
+            scores = scores.view(B_scores, n_patch_mhmr, n_patch_mhmr, C_scores).permute(
+                0, 3, 1, 2
             )
 
             if self.msk_head_flag:
                 msks = self.downstream_head.segment(feat_mhmr_i)
-                msks = rearrange(
-                    msks, "b (nh nw) c -> b c nh nw", nh=n_patch_mhmr, nw=n_patch_mhmr
-                )
+                B_msks, HW_msks, C_msks = msks.shape
+                msks = msks.view(
+                    B_msks, n_patch_mhmr, n_patch_mhmr, C_msks
+                ).permute(0, 3, 1, 2)
                 msks = F.pixel_shuffle(msks, self.bb_patch_size).permute((0, 2, 3, 1))
 
-            feat_mhmr_i = rearrange(
-                feat_mhmr_i,
-                "b (nh nw) c -> b nh nw c",
-                nh=n_patch_mhmr,
-                nw=n_patch_mhmr,
+            feat_mhmr_i = feat_mhmr_i.view(
+                feat_mhmr_i.shape[0],
+                n_patch_mhmr,
+                n_patch_mhmr,
+                feat_mhmr_i.shape[-1],
             )
 
             scores = nms(scores, kernel=3)
@@ -1738,24 +1741,24 @@ class ARCroco3DStereo(CroCoNet):
             smpl_tk_mhmr = feat_central_mhmr.unsqueeze(0)
 
             # --- CUT3R Tokenizer ---
-            img_h, img_w = view["img"].shape[-2:]
-            img_shape_head = (int(img_h), int(img_w))
+            img_h, img_w = _view["img"].shape[-2:]
+            img_shape_head = (img_h, img_w)
 
             patch_size = self.croco_args["patch_size"]
             n_patch_cut3r_h = img_h // patch_size
             n_patch_cut3r_w = img_w // patch_size
 
-            feat_cut3r_i = rearrange(
-                feat_i,
-                "b (nh nw) c -> b nh nw c",
-                nh=n_patch_cut3r_h,
-                nw=n_patch_cut3r_w,
+            feat_cut3r_i = feat_i.view(
+                feat_i.shape[0],
+                n_patch_cut3r_h,
+                n_patch_cut3r_w,
+                feat_i.shape[-1],
             )
-            pos_cut3r_i = rearrange(
-                pos_i,
-                "b (nh nw) c -> b nh nw c",
-                nh=n_patch_cut3r_h,
-                nw=n_patch_cut3r_w,
+            pos_cut3r_i = pos_i.view(
+                pos_i.shape[0],
+                n_patch_cut3r_h,
+                n_patch_cut3r_w,
+                pos_i.shape[-1],
             )
 
             target_height = shape[:, 0]
@@ -1794,6 +1797,7 @@ class ARCroco3DStereo(CroCoNet):
             smpl_feat_i = fused_tk
             smpl_pos_i = smpl_pos_cut3r
             n_humans_i = smpl_feat_i.shape[1]
+            num_patches = feat_i.shape[1]
 
             if i == 0:
                 state_feat, state_pos = self._init_state(feat_i, pos_i)
@@ -1824,9 +1828,8 @@ class ARCroco3DStereo(CroCoNet):
                 combined_reset = torch.clamp(
                     reset_mask_tensor + first_frame_mask, max=1.0
                 )
-                pose_feat_i = (
-                    pose_token_full * combined_reset
-                    + pose_feat_prev * (1.0 - combined_reset)
+                pose_feat_i = torch.where(
+                    combined_reset.to(dtype=torch.bool), pose_token_full, pose_feat_prev
                 )
                 pose_pos_i = -torch.ones(
                     feat_i.shape[0], 1, 2, device=device, dtype=pos_i.dtype
@@ -1854,22 +1857,28 @@ class ARCroco3DStereo(CroCoNet):
             out_pose_feat_i = dec[-1][:, 0:1]
             new_mem = self.pose_retriever.update_mem(mem, global_img_feat_i, out_pose_feat_i)
 
+            patch_start = 1
+            patch_end = 1 + num_patches
+
+            dec_mid_2 = dec[self.dec_depth * 2 // 4][:, patch_start:patch_end].float()
+            dec_mid_3 = dec[self.dec_depth * 3 // 4][:, patch_start:patch_end].float()
+
+            dec_last = dec[self.dec_depth]
+            dec_last_pose = dec_last[:, :1]
+            dec_last_patches = dec_last[:, patch_start:patch_end]
+            dec_last_head = torch.cat([dec_last_pose, dec_last_patches], dim=1).float()
+
+            head_input = [
+                dec[0].float(),
+                dec_mid_2,
+                dec_mid_3,
+                dec_last_head,
+            ]
+
             if n_humans_i > 0:
-                head_input = [
-                    dec[0].float(),
-                    dec[self.dec_depth * 2 // 4][:, 1:-n_humans_i].float(),
-                    dec[self.dec_depth * 3 // 4][:, 1:-n_humans_i].float(),
-                    dec[self.dec_depth][:, :-n_humans_i].float(),
-                ]
-                smpl_token = dec[self.dec_depth][:, -n_humans_i:].float()
+                smpl_token = dec_last[:, patch_end : patch_end + n_humans_i].float()
                 smpl_token_cat = torch.cat([smpl_token, smpl_tk_mhmr], dim=-1)
             else:
-                head_input = [
-                    dec[0].float(),
-                    dec[self.dec_depth * 2 // 4][:, 1:].float(),
-                    dec[self.dec_depth * 3 // 4][:, 1:].float(),
-                    dec[self.dec_depth].float(),
-                ]
                 smpl_token_cat = None
 
             res = self._downstream_head(
@@ -1894,24 +1903,32 @@ class ARCroco3DStereo(CroCoNet):
             else:
                 update_mask = img_mask
             update_mask = update_mask[:, None, None].float()
+            update_mask_bool = update_mask.to(dtype=torch.bool)
 
             if use_ttt3r and i != 0:
-                cross_attn_states = rearrange(
-                    torch.cat(cross_attn_states, dim=0),
-                    "l h nstate nimg -> 1 nstate nimg (l h)",
-                ).mean(dim=(-1, -2))
+                cas = torch.cat(cross_attn_states, dim=0)
+                # cas shape: [L, H, N_state, N_img]
+                L_cas, H_cas, N_state, N_img = cas.shape
+                cas = cas.permute(2, 3, 0, 1).reshape(1, N_state, N_img, L_cas * H_cas)
+                cross_attn_states = cas.mean(dim=(-1, -2))
                 update_mask_state = update_mask * torch.sigmoid(cross_attn_states)[..., None]
             else:
                 update_mask_state = update_mask
 
-            state_feat = new_state_feat * update_mask_state + state_feat * (1 - update_mask_state)
-            mem = new_mem * update_mask + mem * (1 - update_mask)
+            if use_ttt3r and i != 0:
+                # Soft gating based on cross-attention scores
+                state_feat = state_feat + update_mask_state * (new_state_feat - state_feat)
+            else:
+                state_feat = torch.where(update_mask_bool, new_state_feat, state_feat)
+
+            mem = torch.where(update_mask_bool, new_mem, mem)
 
             reset_mask = view["reset"]
             if reset_mask is not None:
                 reset_mask = reset_mask[:, None, None].float()
-                state_feat = init_state_feat * reset_mask + state_feat * (1 - reset_mask)
-                mem = init_mem * reset_mask + mem * (1 - reset_mask)
+                reset_mask_bool = reset_mask.to(dtype=torch.bool)
+                state_feat = torch.where(reset_mask_bool, init_state_feat, state_feat)
+                mem = torch.where(reset_mask_bool, init_mem, mem)
 
             all_state_args.append((state_feat, state_pos, init_state_feat, mem, init_mem))
 

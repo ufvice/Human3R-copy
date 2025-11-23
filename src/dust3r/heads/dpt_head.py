@@ -58,9 +58,12 @@ class DPTOutputAdapter_fix(DPTOutputAdapter):
 
         layers = [self.adapt_tokens(l) for l in layers]
 
-        layers = [
-            rearrange(l, "b (nh nw) c -> b c nh nw", nh=N_H, nw=N_W) for l in layers
-        ]
+        new_layers = []
+        for l in layers:
+            b, hw, c = l.shape
+            l = l.view(b, N_H, N_W, c).permute(0, 3, 1, 2)
+            new_layers.append(l)
+        layers = new_layers
 
         layers = [self.act_postprocess[idx](l) for idx, l in enumerate(layers)]
 

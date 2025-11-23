@@ -14,12 +14,12 @@ class Dinov2Backbone(nn.Module):
 
         # Map original backbone names to Hugging Face model ids
         model_map = {
-            "dinov2_vitl14": "facebook/dinov2-vit-large-14",
-            "dinov2_vitb14": "facebook/dinov2-vit-base-14",
-            "dinov2_vits14": "facebook/dinov2-vit-small-14",
-            "dinov2_vitg14": "facebook/dinov2-vit-giant-14",
+            "dinov2_vitl14": "facebook/dinov2-large",
+            "dinov2_vitb14": "facebook/dinov2-base",
+            "dinov2_vits14": "facebook/dinov2-small",
+            "dinov2_vitg14": "facebook/dinov2-giant",
         }
-        hf_name = model_map.get(self.name, "facebook/dinov2-vit-large-14")
+        hf_name = model_map.get(self.name, "facebook/dinov2-large")
 
         # Load HF model
         if pretrained:
